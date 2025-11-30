@@ -7,7 +7,7 @@ import { chatWithGemini } from '../actions'
 import { 
   LogOut, Plus, Book, User, Send, Bot, 
   GraduationCap, BookOpen, Sun, Moon, 
-  MoreVertical, Search, AlertCircle, RefreshCw 
+  MoreVertical, Search, AlertCircle, RefreshCw, Wrench 
 } from 'lucide-react'
 import { useTheme } from 'next-themes'
 
@@ -23,7 +23,7 @@ export default function Dashboard() {
   
   // Estados de carga y usuario
   const [loadingProfile, setLoadingProfile] = useState(true)
-  const [retryCount, setRetryCount] = useState(0)
+  const [fixingProfile, setFixingProfile] = useState(false) // Nuevo estado para feedback visual
   const [user, setUser] = useState<any>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
   
@@ -43,32 +43,69 @@ export default function Dashboard() {
   const [aiLoading, setAiLoading] = useState(false)
   const chatEndRef = useRef<HTMLDivElement>(null)
 
-  // 1. CARGA INICIAL ROBUSTA
-  const fetchProfile = useCallback(async (userId: string, retries = 0) => {
+  // 1. CARGA INICIAL ROBUSTA + AUTOCURACIÓN
+  const fetchProfile = useCallback(async (currentUser: any, retries = 0) => {
     try {
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
-        .eq('id', userId)
-        .single()
+        .eq('id', currentUser.id)
+        .maybeSingle() // Usamos maybeSingle para no lanzar error si es null
 
-      if (error || !data) {
-        // Si falla, reintentamos hasta 3 veces con un pequeño delay
-        if (retries < 3) {
-          setTimeout(() => fetchProfile(userId, retries + 1), 1000)
+      if (error) throw error
+
+      if (!data) {
+        // Si no hay datos, reintentamos un par de veces
+        if (retries < 2) {
+          console.log(`Reintentando cargar perfil... Intento ${retries + 1}`)
+          setTimeout(() => fetchProfile(currentUser, retries + 1), 1500)
           return
         }
-        throw new Error("No se pudo cargar el perfil")
+        
+        // Si fallan los reintentos, activamos la AUTOCURACIÓN
+        console.log("Perfil no encontrado. Iniciando autocuración...")
+        setFixingProfile(true)
+        await createMissingProfile(currentUser)
+        return
       }
 
+      // Si todo sale bien
       setProfile(data)
       setLoadingProfile(false)
-      fetchCourses(data.role, userId)
+      fetchCourses(data.role, currentUser.id)
+
     } catch (err) {
-      console.error(err)
-      setLoadingProfile(false) // Dejamos de cargar para mostrar error
+      console.error("Error crítico cargando perfil:", err)
+      setLoadingProfile(false)
     }
   }, [])
+
+  // Función de Autocuración: Crea el perfil si falta
+  const createMissingProfile = async (currentUser: any) => {
+    try {
+      // Extraemos metadatos o usamos valores por defecto
+      const meta = currentUser.user_metadata || {}
+      const newProfile = {
+        id: currentUser.id,
+        full_name: meta.full_name || currentUser.email?.split('@')[0] || 'Usuario',
+        role: meta.role || 'student',
+        avatar_url: meta.avatar_url || ''
+      }
+
+      const { error } = await supabase.from('profiles').insert(newProfile)
+      
+      if (error) throw error
+
+      // Si se crea con éxito, recargamos la página para iniciar limpio
+      console.log("Perfil recreado con éxito. Reiniciando...")
+      window.location.reload()
+      
+    } catch (err) {
+      console.error("Falló la autocuración:", err)
+      setFixingProfile(false)
+      setLoadingProfile(false) // Esto mostrará la pantalla de error final
+    }
+  }
 
   useEffect(() => {
     setMounted(true)
@@ -79,7 +116,7 @@ export default function Dashboard() {
         return
       }
       setUser(user)
-      fetchProfile(user.id)
+      fetchProfile(user)
     }
     init()
   }, [router, fetchProfile])
@@ -160,16 +197,18 @@ export default function Dashboard() {
   // --- PANTALLAS DE CARGA Y ERROR ---
   if (!mounted) return null
   
-  if (loadingProfile) {
+  if (loadingProfile || fixingProfile) {
     return (
       <div className="flex flex-col items-center justify-center h-screen bg-gray-50 dark:bg-gray-900 transition-colors">
         <div className="relative">
           <div className="w-16 h-16 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin"></div>
           <div className="absolute inset-0 flex items-center justify-center">
-            <GraduationCap className="w-6 h-6 text-blue-600" />
+            {fixingProfile ? <Wrench className="w-6 h-6 text-blue-600 animate-pulse" /> : <GraduationCap className="w-6 h-6 text-blue-600" />}
           </div>
         </div>
-        <p className="mt-4 text-gray-500 font-medium animate-pulse">Preparando tu entorno de aprendizaje...</p>
+        <p className="mt-4 text-gray-500 font-medium animate-pulse">
+          {fixingProfile ? "Reparando tu perfil automáticamente..." : "Preparando tu entorno de aprendizaje..."}
+        </p>
       </div>
     )
   }
@@ -178,15 +217,15 @@ export default function Dashboard() {
     return (
       <div className="flex flex-col items-center justify-center h-screen bg-gray-50 dark:bg-gray-900 p-6 text-center">
         <AlertCircle className="w-16 h-16 text-red-500 mb-4" />
-        <h2 className="text-2xl font-bold text-gray-800 dark:text-white mb-2">Error cargando perfil</h2>
+        <h2 className="text-2xl font-bold text-gray-800 dark:text-white mb-2">Error de Sincronización</h2>
         <p className="text-gray-600 dark:text-gray-400 mb-6 max-w-md">
-          Tu cuenta fue creada pero el perfil tardó en sincronizarse. Por favor, intenta de nuevo.
+          No pudimos encontrar ni crear tu perfil automáticamente. Esto suele ser un problema de permisos en la base de datos.
         </p>
         <button 
           onClick={() => window.location.reload()} 
           className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors shadow-lg"
         >
-          <RefreshCw className="w-5 h-5" /> Recargar Página
+          <RefreshCw className="w-5 h-5" /> Intentar de nuevo
         </button>
       </div>
     )
