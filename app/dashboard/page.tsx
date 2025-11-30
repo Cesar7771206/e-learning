@@ -9,7 +9,7 @@ import {
   GraduationCap, BookOpen, Sun, Moon, 
   MoreVertical, Search, AlertCircle, RefreshCw, Wrench,
   Calendar as CalendarIcon, Lightbulb, Code as CodeIcon, Star,
-  CheckCircle2, Play, Video
+  CheckCircle2, Play, Video, ExternalLink
 } from 'lucide-react'
 import { useTheme } from 'next-themes'
 
@@ -220,47 +220,89 @@ export default function Dashboard() {
     }
   }
 
-  // --- 3. GESTIÓN DE SESIONES ---
+  // --- 3. GESTIÓN DE SESIONES (REAL) ---
   const fetchSessions = async (courseId: number) => {
-    // Aquí iría el fetch real a la BD si tienes la tabla.
-    console.log("Cargando sesiones para curso", courseId)
+    try {
+      const { data, error } = await supabase
+        .from('sessions')
+        .select('*')
+        .eq('course_id', courseId)
+        .order('date', { ascending: true })
+      
+      if (!error && data) {
+        setCourseSessions(data)
+      } else {
+        setCourseSessions([])
+      }
+    } catch (err) {
+      console.error("Error fetching sessions:", err)
+    }
   }
 
   const scheduleSession = async () => {
     if (!sessionDate || !sessionTime || !selectedCourse) return
-    const newSession: Session = {
-      id: Math.random().toString(),
-      course_id: selectedCourse.id,
-      date: sessionDate,
-      time: sessionTime,
-      link: sessionLink
+    
+    try {
+      const { error } = await supabase.from('sessions').insert({
+        course_id: selectedCourse.id,
+        date: sessionDate,
+        time: sessionTime,
+        link: sessionLink
+      })
+
+      if (error) throw error
+
+      alert("Sesión creada correctamente")
+      fetchSessions(selectedCourse.id) // Refrescar lista para que todos la vean
+      setSessionDate('')
+      setSessionTime('')
+      setSessionLink('')
+      setShowSessionForm(false)
+    } catch (err: any) {
+      alert("Error al crear sesión: " + err.message)
     }
-    setCourseSessions(prev => [...prev, newSession])
-    alert("Sesión creada en este curso")
-    setShowSessionForm(false)
   }
 
-  // --- 4. CHAT INTELIGENTE ---
-  const initAiConversation = async (course: Course) => {
-    setAiLoading(true)
+  // --- 4. CHAT INTELIGENTE (MEJORADO) ---
+  
+  // Helper para construir el prompt del sistema según categoría
+  const getCourseSystemPrompt = (category: CourseCategory, title: string, desc: string) => {
     let specializedPrompt = ""
 
-    if (course.category === 'math') {
-      specializedPrompt = "Eres un profesor de Matemáticas. Usa formato LaTeX con doble signo de dólar ($$) para fórmulas complejas y un solo signo ($) para variables inline. Sé preciso y visual."
-    } else if (course.category === 'programming') {
-      specializedPrompt = "Eres un Senior Developer mentor. Si pides código, usa la etiqueta {{CODE_REQUEST}} al final. Evalúa la lógica y eficiencia."
-    } else if (course.category === 'letters') {
-      specializedPrompt = "Eres un profesor de Literatura y Humanidades. Usa un lenguaje elocuente, bien estructurado y elegante. Prioriza el análisis crítico."
+    if (category === 'math') {
+      specializedPrompt = "Eres un profesor de Matemáticas experto. TUS REGLAS: 1. Usa formato LaTeX con doble signo de dólar ($$) para fórmulas complejas y un solo signo ($) para variables inline. 2. Sé muy visual y paso a paso. 3. Si haces una pregunta, SIEMPRE da opciones."
+    } else if (category === 'programming') {
+      specializedPrompt = "Eres un Senior Developer y mentor. TUS REGLAS: 1. Si pides al estudiante que resuelva un problema, TERMINA tu mensaje con la etiqueta {{CODE_REQUEST}} para activar el editor. 2. Evalúa la lógica, eficiencia y limpieza del código. 3. Si haces preguntas teóricas, da opciones."
+    } else if (category === 'letters') {
+      specializedPrompt = "Eres un profesor de Literatura y Humanidades. TUS REGLAS: 1. Usa un lenguaje elocuente, bien estructurado y elegante. 2. Prioriza el análisis crítico y el contexto histórico. 3. Formatea tu texto con párrafos claros y negritas para énfasis."
+    } else {
+      specializedPrompt = "Eres un tutor experto y amable."
     }
 
-    const systemInstruction = `
-      ${specializedPrompt}
-      1. Saluda y evalúa el nivel del estudiante.
-      2. Si usas opciones múltiples, ponlas al final así: {{Opción A|Opción B|Opción C}}.
-      3. IMPORTANTE: Si es programación y quieres que el alumno practique, termina con {{CODE_REQUEST}}.
+    return `
+      CONTEXTO DEL CURSO: ${title} - ${desc}
+      ROL: ${specializedPrompt}
+      
+      REGLA DE ORO (BOTONES):
+      Siempre que hagas una pregunta de opción múltiple o quieras que el usuario elija un camino, pon las opciones AL FINAL de tu respuesta en este formato exacto:
+      {{Opción 1|Opción 2|Opción 3}}
+      
+      REGLA DE ORO (CÓDIGO):
+      Si es un ejercicio de programación donde el estudiante debe escribir código, pon al final: {{CODE_REQUEST}}
     `
+  }
+
+  const initAiConversation = async (course: Course) => {
+    if (messages.length > 0) return // No reiniciar si ya hay mensajes
+
+    setAiLoading(true)
+    const systemInstruction = getCourseSystemPrompt(course.category, course.title, course.description)
     
-    const response = await chatWithGemini("Hola, inicia la clase.", course.title + ": " + course.description + systemInstruction, [])
+    const response = await chatWithGemini(
+      "Hola, soy el estudiante. Inicia la clase saludando y evaluando mi nivel con una pregunta.", 
+      systemInstruction, 
+      []
+    )
     
     if (response.success) {
       const { text, options, isCodeRequest } = parseAiResponse(response.message)
@@ -297,7 +339,10 @@ export default function Dashboard() {
     setAiLoading(true)
     setCodeEditorVisible(false) 
 
-    const response = await chatWithGemini(finalMsg, `${selectedCourse.title} (${selectedCourse.category})`, messages)
+    // Reenviamos el System Prompt en cada turno para asegurar que no pierda el contexto
+    const systemInstruction = getCourseSystemPrompt(selectedCourse.category, selectedCourse.title, selectedCourse.description)
+
+    const response = await chatWithGemini(finalMsg, systemInstruction, messages)
 
     if (response.success) {
       const { text, options, isCodeRequest } = parseAiResponse(response.message)
@@ -311,12 +356,13 @@ export default function Dashboard() {
     const parts = text.split(/(\*\*.*?\*\*)/g)
     return parts.map((part, i) => {
       if (part.startsWith('**') && part.endsWith('**')) {
-        return <strong key={i} className="text-indigo-600 dark:text-indigo-400">{part.slice(2, -2)}</strong>
+        return <strong key={i} className="text-indigo-600 dark:text-indigo-400 font-bold">{part.slice(2, -2)}</strong>
       }
+      // Renderizado mejorado de fórmulas estilo LaTeX
       if (part.includes('$$') || part.includes('$')) {
-         return <span key={i} className="font-serif italic bg-yellow-50 dark:bg-yellow-900/20 px-1 rounded text-lg mx-1">{part}</span>
+         return <span key={i} className="font-serif italic bg-yellow-50 dark:bg-yellow-900/30 px-2 py-0.5 rounded text-lg mx-1 border border-yellow-100 dark:border-yellow-900/50">{part}</span>
       }
-      return <span key={i} className={category === 'letters' ? 'font-serif leading-relaxed text-lg' : ''}>{part}</span>
+      return <span key={i} className={category === 'letters' ? 'font-serif leading-relaxed text-lg text-gray-800 dark:text-gray-200' : ''}>{part}</span>
     })
   }
 
@@ -537,9 +583,11 @@ export default function Dashboard() {
                    <p className="text-sm text-gray-400 text-center py-4">No hay sesiones programadas.</p>
                  ) : (
                    courseSessions.map((session, idx) => (
-                     <div key={idx} className="bg-purple-50 dark:bg-purple-900/10 border border-purple-100 dark:border-purple-900/30 p-3 rounded-xl">
+                     <div key={idx} className="bg-purple-50 dark:bg-purple-900/10 border border-purple-100 dark:border-purple-900/30 p-3 rounded-xl hover:bg-purple-100 dark:hover:bg-purple-900/20 transition-colors">
                        <p className="font-bold text-purple-700 dark:text-purple-300 text-sm">{session.date} - {session.time}</p>
-                       <a href={session.link} target="_blank" className="text-xs text-purple-500 underline mt-1 block hover:text-purple-700">Unirse a la reunión</a>
+                       <a href={session.link} target="_blank" className="text-xs text-purple-600 dark:text-purple-400 underline mt-1 flex items-center gap-1 hover:text-purple-800">
+                         Unirse a la reunión <ExternalLink className="w-3 h-3"/>
+                       </a>
                      </div>
                    ))
                  )}
@@ -557,10 +605,10 @@ export default function Dashboard() {
                    
                    {showSessionForm && (
                      <div className="mt-4 space-y-3 bg-gray-50 dark:bg-gray-800 p-4 rounded-xl animate-in slide-in-from-top-2">
-                       <input type="date" className="w-full p-2 rounded-lg border text-sm dark:bg-gray-900 dark:border-gray-700 dark:text-white" value={sessionDate} onChange={e => setSessionDate(e.target.value)} />
-                       <input type="time" className="w-full p-2 rounded-lg border text-sm dark:bg-gray-900 dark:border-gray-700 dark:text-white" value={sessionTime} onChange={e => setSessionTime(e.target.value)} />
-                       <input type="url" placeholder="Link (Zoom/Meet)" className="w-full p-2 rounded-lg border text-sm dark:bg-gray-900 dark:border-gray-700 dark:text-white" value={sessionLink} onChange={e => setSessionLink(e.target.value)} />
-                       <button onClick={scheduleSession} className="w-full bg-purple-600 text-white py-2 rounded-lg text-sm font-bold hover:bg-purple-700">Guardar</button>
+                       <input type="date" className="w-full p-2 rounded-lg border text-sm dark:bg-gray-900 dark:border-gray-700 dark:text-white outline-none focus:border-purple-500" value={sessionDate} onChange={e => setSessionDate(e.target.value)} />
+                       <input type="time" className="w-full p-2 rounded-lg border text-sm dark:bg-gray-900 dark:border-gray-700 dark:text-white outline-none focus:border-purple-500" value={sessionTime} onChange={e => setSessionTime(e.target.value)} />
+                       <input type="url" placeholder="Link (Zoom/Meet)" className="w-full p-2 rounded-lg border text-sm dark:bg-gray-900 dark:border-gray-700 dark:text-white outline-none focus:border-purple-500" value={sessionLink} onChange={e => setSessionLink(e.target.value)} />
+                       <button onClick={scheduleSession} className="w-full bg-purple-600 text-white py-2 rounded-lg text-sm font-bold hover:bg-purple-700 transition-colors">Guardar Sesión</button>
                      </div>
                    )}
                  </div>
@@ -582,7 +630,7 @@ export default function Dashboard() {
                  <div className="space-y-5">
                    <div>
                      <label className="block text-sm font-bold mb-2 dark:text-gray-300">Título</label>
-                     <input className="w-full p-3 border rounded-xl dark:bg-gray-900 dark:border-gray-700 dark:text-white" placeholder="Ej: Cálculo I" value={newCourseTitle} onChange={e => setNewCourseTitle(e.target.value)} />
+                     <input className="w-full p-3 border rounded-xl dark:bg-gray-900 dark:border-gray-700 dark:text-white outline-none focus:ring-2 focus:ring-indigo-500" placeholder="Ej: Cálculo I" value={newCourseTitle} onChange={e => setNewCourseTitle(e.target.value)} />
                    </div>
                    
                    <div className="grid grid-cols-3 gap-3">
@@ -593,7 +641,7 @@ export default function Dashboard() {
 
                    <div>
                      <label className="block text-sm font-bold mb-2 dark:text-gray-300">Descripción</label>
-                     <textarea className="w-full p-3 border rounded-xl h-32 dark:bg-gray-900 dark:border-gray-700 dark:text-white" placeholder="¿De qué trata el curso?" value={newCourseDesc} onChange={e => setNewCourseDesc(e.target.value)} />
+                     <textarea className="w-full p-3 border rounded-xl h-32 dark:bg-gray-900 dark:border-gray-700 dark:text-white outline-none focus:ring-2 focus:ring-indigo-500" placeholder="¿De qué trata el curso?" value={newCourseDesc} onChange={e => setNewCourseDesc(e.target.value)} />
                    </div>
                    <button onClick={createCourse} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 shadow-lg shadow-indigo-500/30">Publicar Curso</button>
                  </div>
