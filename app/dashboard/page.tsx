@@ -130,39 +130,74 @@ export default function Dashboard() {
     init()
   }, [router, fetchProfile])
 
-  // 2. Fetch Cursos (Mejorado para traer nombre del docente)
+  // 2. Fetch Cursos (Blindado contra errores de relación)
   const fetchCourses = async (role: string | undefined, userId: string) => {
-    if (role === 'teacher') {
-      const { data } = await supabase.from('courses').select('*, profiles(full_name)').eq('created_by', userId)
-      setMyCourses(data || [])
-    } else {
-      // Estudiante: trae cursos inscritos y todos los disponibles con nombre del profe
-      const { data: enrollmentData } = await supabase
-        .from('enrollments')
-        .select('course_id, courses(*, profiles(full_name))')
-        .eq('student_id', userId)
-      
-      const enrolled = enrollmentData?.map((e: any) => e.courses) || []
-      setMyCourses(enrolled)
+    console.log("Cargando cursos para rol:", role)
+    try {
+      if (role === 'teacher') {
+        // Intento 1: Cargar con nombre de perfil (puede fallar si la relación está mal)
+        const { data, error } = await supabase
+          .from('courses')
+          .select('*, profiles(full_name)')
+          .eq('created_by', userId)
+        
+        if (!error && data) {
+          setMyCourses(data)
+        } else {
+          console.warn("Fallo carga con relación, intentando carga simple...", error)
+          // Intento 2 (Fallback): Cargar solo cursos sin join
+          const { data: simpleData } = await supabase
+            .from('courses')
+            .select('*')
+            .eq('created_by', userId)
+          setMyCourses(simpleData || [])
+        }
 
-      const { data: allData } = await supabase.from('courses').select('*, profiles(full_name)')
-      setCourses(allData || [])
+      } else {
+        // Estudiante: trae cursos inscritos
+        const { data: enrollmentData } = await supabase
+          .from('enrollments')
+          .select('course_id, courses(*)') // Simplificado para evitar error de join profundo
+          .eq('student_id', userId)
+        
+        // Mapeo seguro
+        const enrolled = enrollmentData?.map((e: any) => e.courses).filter(Boolean) || []
+        setMyCourses(enrolled)
+
+        // Todos los cursos disponibles
+        const { data: allData } = await supabase.from('courses').select('*')
+        setCourses(allData || [])
+      }
+    } catch (err) {
+      console.error("Error general en fetchCourses:", err)
     }
   }
 
   // 3. Crear Curso
   const createCourse = async () => {
     if (!profile || profile.role !== 'teacher') return
-    const { error } = await supabase.from('courses').insert({
-      title: newCourseTitle,
-      description: newCourseDesc,
-      created_by: user.id
-    })
-    if (!error) {
+    
+    try {
+      const { error } = await supabase.from('courses').insert({
+        title: newCourseTitle,
+        description: newCourseDesc,
+        created_by: user.id
+      })
+
+      if (error) throw error
+
+      alert("Curso creado exitosamente")
       setNewCourseTitle('')
       setNewCourseDesc('')
-      fetchCourses('teacher', user.id)
-      setView('courses')
+      
+      // Esperamos un momento para que la BD propague el cambio
+      setTimeout(() => {
+        fetchCourses('teacher', user.id)
+        setView('courses')
+      }, 500)
+
+    } catch (error: any) {
+      alert('Error al crear curso: ' + error.message)
     }
   }
 
@@ -337,7 +372,10 @@ export default function Dashboard() {
           <p className="px-4 text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2 hidden lg:block">Menú</p>
           
           <button 
-            onClick={() => setView('courses')} 
+            onClick={() => {
+              setView('courses')
+              if (user) fetchCourses(profile?.role, user.id) // Refrescar al hacer clic
+            }} 
             className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all duration-200 group ${
               view === 'courses' 
               ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 shadow-sm font-semibold' 
