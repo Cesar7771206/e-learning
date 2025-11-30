@@ -8,26 +8,38 @@ import {
   LogOut, Plus, Book, User, Send, Bot, 
   GraduationCap, BookOpen, Sun, Moon, 
   MoreVertical, Search, AlertCircle, RefreshCw, Wrench,
-  Calendar as CalendarIcon, Lightbulb, Code as CodeIcon, Star
+  Calendar as CalendarIcon, Lightbulb, Code as CodeIcon, Star,
+  CheckCircle2, Play, Video
 } from 'lucide-react'
 import { useTheme } from 'next-themes'
 
-// Tipos
+// --- TIPOS ---
 type Profile = { id: string, role: 'student' | 'teacher', full_name: string, avatar_url?: string }
+type CourseCategory = 'math' | 'programming' | 'letters' | 'other'
+
 type Course = { 
   id: number, 
   title: string, 
   description: string, 
+  category: CourseCategory, // Nuevo campo
   created_by: string,
-  profiles?: { full_name: string } // Relación con el perfil del docente
+  profiles?: { full_name: string }
 }
-// Mensaje mejorado para soportar opciones y código
+
+type Session = {
+  id: string,
+  course_id: number,
+  date: string,
+  time: string,
+  link: string
+}
+
 type Message = { 
   role: 'user' | 'model', 
   content: string, 
   timestamp?: Date,
-  options?: string[], // Opciones para botones
-  isCodeRequest?: boolean // Si la IA pide código
+  options?: string[], 
+  isCodeRequest?: boolean 
 }
 
 export default function Dashboard() {
@@ -41,30 +53,34 @@ export default function Dashboard() {
   const [user, setUser] = useState<any>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
   
-  // Estados de vista y datos
-  // Añadimos 'schedule' para la vista de calendario del docente
-  const [view, setView] = useState<'courses' | 'chat' | 'create' | 'schedule'>('courses')
+  // Estados de vista
+  const [view, setView] = useState<'courses' | 'course_detail' | 'create'>('courses')
+  
+  // Datos
   const [courses, setCourses] = useState<Course[]>([])
   const [myCourses, setMyCourses] = useState<Course[]>([])
   const [selectedCourse, setSelectedCourse] = useState<Course | null>(null)
+  const [courseSessions, setCourseSessions] = useState<Session[]>([]) // Sesiones del curso activo
   
-  // Estados de formulario (Curso)
+  // Formularios Curso
   const [newCourseTitle, setNewCourseTitle] = useState('')
   const [newCourseDesc, setNewCourseDesc] = useState('')
+  const [newCourseCategory, setNewCourseCategory] = useState<CourseCategory>('other')
 
-  // Estados de formulario (Sesiones)
+  // Formularios Sesión
   const [sessionDate, setSessionDate] = useState('')
   const [sessionTime, setSessionTime] = useState('')
   const [sessionLink, setSessionLink] = useState('')
+  const [showSessionForm, setShowSessionForm] = useState(false)
   
-  // Estados de Chat
+  // Chat
   const [messages, setMessages] = useState<Message[]>([])
   const [inputMsg, setInputMsg] = useState('')
   const [aiLoading, setAiLoading] = useState(false)
-  const [codeMode, setCodeMode] = useState(false) // Modo editor de código
+  const [codeEditorVisible, setCodeEditorVisible] = useState(false) 
   const chatEndRef = useRef<HTMLDivElement>(null)
 
-  // 1. CARGA INICIAL ROBUSTA + AUTOCURACIÓN
+  // --- 1. CARGA INICIAL ---
   const fetchProfile = useCallback(async (currentUser: any, retries = 0) => {
     try {
       const { data, error } = await supabase
@@ -77,11 +93,9 @@ export default function Dashboard() {
 
       if (!data) {
         if (retries < 2) {
-          console.log(`Reintentando cargar perfil... Intento ${retries + 1}`)
           setTimeout(() => fetchProfile(currentUser, retries + 1), 1500)
           return
         }
-        console.log("Perfil no encontrado. Iniciando autocuración...")
         setFixingProfile(true)
         await createMissingProfile(currentUser)
         return
@@ -92,7 +106,7 @@ export default function Dashboard() {
       fetchCourses(data.role, currentUser.id)
 
     } catch (err) {
-      console.error("Error crítico cargando perfil:", err)
+      console.error("Error perfil:", err)
       setLoadingProfile(false)
     }
   }, [])
@@ -100,19 +114,15 @@ export default function Dashboard() {
   const createMissingProfile = async (currentUser: any) => {
     try {
       const meta = currentUser.user_metadata || {}
-      const newProfile = {
+      await supabase.from('profiles').insert({
         id: currentUser.id,
         full_name: meta.full_name || currentUser.email?.split('@')[0] || 'Usuario',
         role: meta.role || 'student',
-        avatar_url: meta.avatar_url || ''
-      }
-      const { error } = await supabase.from('profiles').insert(newProfile)
-      if (error) throw error
+        avatar_url: ''
+      })
       window.location.reload()
     } catch (err) {
-      console.error("Falló la autocuración:", err)
-      setFixingProfile(false)
-      setLoadingProfile(false)
+      console.error("Falló autocuración:", err)
     }
   }
 
@@ -130,159 +140,118 @@ export default function Dashboard() {
     init()
   }, [router, fetchProfile])
 
-  // 2. Fetch Cursos (Blindado contra errores de relación)
+  // --- 2. GESTIÓN DE CURSOS ---
   const fetchCourses = async (role: string | undefined, userId: string) => {
-    console.log("Cargando cursos para rol:", role)
     try {
+      let data
       if (role === 'teacher') {
-        // Intento 1: Cargar con nombre de perfil (puede fallar si la relación está mal)
-        const { data, error } = await supabase
-          .from('courses')
-          .select('*, profiles(full_name)')
-          .eq('created_by', userId)
-        
-        if (!error && data) {
-          setMyCourses(data)
-        } else {
-          console.warn("Fallo carga con relación, intentando carga simple...", error)
-          // Intento 2 (Fallback): Cargar solo cursos sin join
-          const { data: simpleData } = await supabase
-            .from('courses')
-            .select('*')
-            .eq('created_by', userId)
-          setMyCourses(simpleData || [])
-        }
-
+        const res = await supabase.from('courses').select('*, profiles(full_name)').eq('created_by', userId)
+        data = res.data
       } else {
-        // Estudiante: trae cursos inscritos
-        const { data: enrollmentData } = await supabase
-          .from('enrollments')
-          .select('course_id, courses(*)') // Simplificado para evitar error de join profundo
-          .eq('student_id', userId)
+        const res = await supabase.from('enrollments').select('course_id, courses(*, profiles(full_name))').eq('student_id', userId)
+        data = res.data?.map((e: any) => e.courses).filter(Boolean)
         
-        // Mapeo seguro
-        const enrolled = enrollmentData?.map((e: any) => e.courses).filter(Boolean) || []
-        setMyCourses(enrolled)
-
-        // Todos los cursos disponibles
-        const { data: allData } = await supabase.from('courses').select('*')
-        setCourses(allData || [])
+        const all = await supabase.from('courses').select('*, profiles(full_name)')
+        setCourses(all.data || [])
       }
-    } catch (err) {
-      console.error("Error general en fetchCourses:", err)
-    }
+      setMyCourses(data || [])
+    } catch (err) { console.error(err) }
   }
 
-  // 3. Crear Curso
   const createCourse = async () => {
     if (!profile || profile.role !== 'teacher') return
-    
     try {
       const { error } = await supabase.from('courses').insert({
         title: newCourseTitle,
         description: newCourseDesc,
+        category: newCourseCategory, // Guardamos la categoría
         created_by: user.id
       })
-
       if (error) throw error
-
       alert("Curso creado exitosamente")
       setNewCourseTitle('')
       setNewCourseDesc('')
-      
-      // Esperamos un momento para que la BD propague el cambio
-      setTimeout(() => {
-        fetchCourses('teacher', user.id)
-        setView('courses')
-      }, 500)
-
-    } catch (error: any) {
-      alert('Error al crear curso: ' + error.message)
-    }
+      fetchCourses('teacher', user.id)
+      setView('courses')
+    } catch (error: any) { alert(error.message) }
   }
 
-  // 4. Inscribirse
   const enrollCourse = async (courseId: number) => {
-    const { error } = await supabase.from('enrollments').insert({
-      student_id: user.id,
-      course_id: courseId
-    })
+    const { error } = await supabase.from('enrollments').insert({ student_id: user.id, course_id: courseId })
     if (!error) {
       fetchCourses('student', user.id)
-      alert("¡Te has inscrito correctamente!")
+      alert("¡Inscrito correctamente!")
     }
   }
 
-  // 5. Programar Sesión (Docente)
+  // --- 3. GESTIÓN DE SESIONES (ASESORÍAS) ---
+  const fetchSessions = async (courseId: number) => {
+    // Simulamos fetch de DB (Deberías tener una tabla 'sessions')
+    // const { data } = await supabase.from('sessions').select('*').eq('course_id', courseId)
+    // setCourseSessions(data || [])
+    // Por ahora simulado localmente para que funcione la UI:
+    console.log("Cargando sesiones para curso", courseId)
+  }
+
   const scheduleSession = async () => {
-    if (!sessionDate || !sessionTime || !profile) return
-    // Aquí insertaríamos en 'tutorial_slots' o similar. Simulamos éxito:
-    alert(`Sesión programada para el ${sessionDate} a las ${sessionTime}`)
-    setSessionDate('')
-    setSessionTime('')
-    setSessionLink('')
-    setView('courses')
-  }
-
-  // 6. Generar Ideas IA (Docente)
-  const generateTeacherPrompts = async () => {
-    const prompt = "Dame 3 ideas creativas para enseñar un tema complejo a estudiantes universitarios. Sé breve."
-    alert("Consultando a tu asistente pedagógico...")
-    const response = await chatWithGemini(prompt, "Pedagogía", [])
-    if(response.success) {
-      alert("Ideas sugeridas:\n\n" + response.message)
+    if (!sessionDate || !sessionTime || !selectedCourse) return
+    const newSession: Session = {
+      id: Math.random().toString(),
+      course_id: selectedCourse.id,
+      date: sessionDate,
+      time: sessionTime,
+      link: sessionLink
     }
+    setCourseSessions(prev => [...prev, newSession]) // Simulado
+    alert("Sesión creada en este curso")
+    setShowSessionForm(false)
   }
 
-  // 7. Lógica del Chat Avanzado (Estudiantes)
-  
-  // Función para iniciar conversación proactiva
+  // --- 4. CHAT INTELIGENTE ---
   const initAiConversation = async (course: Course) => {
-    if (messages.length > 0) return
-    
     setAiLoading(true)
-    // Instrucción "invisible" para configurar a la IA
+    let specializedPrompt = ""
+
+    // Prompt especializado según categoría
+    if (course.category === 'math') {
+      specializedPrompt = "Eres un profesor de Matemáticas. Usa formato LaTeX con doble signo de dólar ($$) para fórmulas complejas y un solo signo ($) para variables inline. Sé preciso y visual."
+    } else if (course.category === 'programming') {
+      specializedPrompt = "Eres un Senior Developer mentor. Si pides código, usa la etiqueta {{CODE_REQUEST}} al final. Evalúa la lógica y eficiencia."
+    } else if (course.category === 'letters') {
+      specializedPrompt = "Eres un profesor de Literatura y Humanidades. Usa un lenguaje elocuente, bien estructurado y elegante. Prioriza el análisis crítico."
+    }
+
     const systemInstruction = `
-      Eres un tutor proactivo de ${course.title}. 
-      1. Saluda al estudiante y hazle una pregunta corta para evaluar su nivel actual.
-      2. Si haces una pregunta de opción múltiple, DEVUELVE LAS OPCIONES EN ESTE FORMATO AL FINAL: {{Opción A|Opción B|Opción C}}.
-      3. Si el tema es programación y pides que escriba código, termina tu mensaje con {{CODE_REQUEST}}.
-      4. Si el estudiante responde mal, da retroalimentación y otra pregunta. Si responde bien, felicita y avanza.
+      ${specializedPrompt}
+      1. Saluda y evalúa el nivel del estudiante.
+      2. Si usas opciones múltiples, ponlas al final así: {{Opción A|Opción B|Opción C}}.
+      3. IMPORTANTE: Si es programación y quieres que el alumno practique, termina con {{CODE_REQUEST}}.
     `
     
-    // Enviamos mensaje vacío visible pero con contexto al backend
-    const response = await chatWithGemini("Hola, inicia la evaluación.", course.title + ": " + course.description + systemInstruction, [])
+    const response = await chatWithGemini("Hola, inicia la clase.", course.title + ": " + course.description + systemInstruction, [])
     
     if (response.success) {
       const { text, options, isCodeRequest } = parseAiResponse(response.message)
-      setMessages([{ 
-        role: 'model', 
-        content: text, 
-        timestamp: new Date(),
-        options: options,
-        isCodeRequest: isCodeRequest
-      }])
+      setMessages([{ role: 'model', content: text, timestamp: new Date(), options, isCodeRequest }])
+      if(isCodeRequest) setCodeEditorVisible(true)
     }
     setAiLoading(false)
   }
 
-  // Parser para detectar opciones {{A|B}} y solicitudes de código {{CODE_REQUEST}}
   const parseAiResponse = (text: string) => {
     let cleanText = text
     let options: string[] | undefined = undefined
     let isCodeRequest = false
 
-    // Detectar opciones
     const optionsMatch = text.match(/\{\{(.+?)\}\}/)
     if (optionsMatch) {
-      if (optionsMatch[1] === 'CODE_REQUEST') {
+      if (optionsMatch[1].includes('CODE_REQUEST')) {
         isCodeRequest = true
       } else {
         options = optionsMatch[1].split('|')
       }
       cleanText = text.replace(optionsMatch[0], '').trim()
     }
-
     return { text: cleanText, options, isCodeRequest }
   }
 
@@ -294,469 +263,322 @@ export default function Dashboard() {
     setMessages(prev => [...prev, newMsg])
     setInputMsg('')
     setAiLoading(true)
-    setCodeMode(false) // Salir del modo código al enviar
+    setCodeEditorVisible(false) // Ocultar editor tras enviar
 
-    const response = await chatWithGemini(
-      finalMsg, 
-      `${selectedCourse.title}: ${selectedCourse.description}`, 
-      messages
-    )
+    const response = await chatWithGemini(finalMsg, `${selectedCourse.title} (${selectedCourse.category})`, messages)
 
     if (response.success) {
       const { text, options, isCodeRequest } = parseAiResponse(response.message)
-      setMessages(prev => [...prev, { 
-        role: 'model', 
-        content: text, 
-        timestamp: new Date(),
-        options,
-        isCodeRequest
-      }])
-      if (isCodeRequest) setCodeMode(true)
+      setMessages(prev => [...prev, { role: 'model', content: text, timestamp: new Date(), options, isCodeRequest }])
+      if (isCodeRequest) setCodeEditorVisible(true)
     }
     setAiLoading(false)
   }
 
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, aiLoading])
+  // --- RENDERIZADO DE TEXTO ENRIQUECIDO ---
+  const renderFormattedText = (text: string, category: CourseCategory) => {
+    // 1. Renderizado Básico de Negritas
+    const parts = text.split(/(\*\*.*?\*\*)/g)
+    return parts.map((part, i) => {
+      if (part.startsWith('**') && part.endsWith('**')) {
+        return <strong key={i} className="text-indigo-600 dark:text-indigo-400">{part.slice(2, -2)}</strong>
+      }
+      // 2. Renderizado "Simulado" de Fórmulas ($$x$$)
+      if (part.includes('$$') || part.includes('$')) {
+         return <span key={i} className="font-serif italic bg-yellow-50 dark:bg-yellow-900/20 px-1 rounded text-lg mx-1">{part}</span>
+      }
+      return <span key={i} className={category === 'letters' ? 'font-serif leading-relaxed text-lg' : ''}>{part}</span>
+    })
+  }
 
-
-  // --- PANTALLAS DE CARGA Y ERROR ---
+  // --- UI PRINCIPAL ---
   if (!mounted) return null
-  
-  if (loadingProfile || fixingProfile) {
-    return (
-      <div className="flex flex-col items-center justify-center h-screen bg-gray-50 dark:bg-gray-900 transition-colors">
-        <div className="relative">
-          <div className="w-16 h-16 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin"></div>
-          <div className="absolute inset-0 flex items-center justify-center">
-            {fixingProfile ? <Wrench className="w-6 h-6 text-blue-600 animate-pulse" /> : <GraduationCap className="w-6 h-6 text-blue-600" />}
-          </div>
-        </div>
-        <p className="mt-4 text-gray-500 font-medium animate-pulse">
-          {fixingProfile ? "Reparando tu perfil automáticamente..." : "Preparando tu entorno de aprendizaje..."}
-        </p>
-      </div>
-    )
-  }
+  if (loadingProfile || fixingProfile) return <div className="h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900"><RefreshCw className="animate-spin text-blue-600 w-8 h-8"/></div>
 
-  if (!profile && !loadingProfile) {
-    return (
-      <div className="flex flex-col items-center justify-center h-screen bg-gray-50 dark:bg-gray-900 p-6 text-center">
-        <AlertCircle className="w-16 h-16 text-red-500 mb-4" />
-        <h2 className="text-2xl font-bold text-gray-800 dark:text-white mb-2">Error de Sincronización</h2>
-        <button 
-          onClick={() => window.location.reload()} 
-          className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors shadow-lg"
-        >
-          <RefreshCw className="w-5 h-5" /> Intentar de nuevo
-        </button>
-      </div>
-    )
-  }
-
-  // --- INTERFAZ PRINCIPAL ---
   return (
-    <div className="flex h-screen bg-[#F3F4F6] dark:bg-[#0f172a] transition-colors duration-300 overflow-hidden font-sans">
+    <div className="flex h-screen bg-[#F8FAFC] dark:bg-[#020617] transition-colors duration-300 font-sans text-sm md:text-base overflow-hidden">
       
       {/* SIDEBAR */}
-      <aside className="w-20 lg:w-72 bg-white dark:bg-[#1e293b] border-r border-gray-200 dark:border-gray-700 flex flex-col transition-all duration-300 z-20 shadow-xl">
-        <div className="p-6 flex items-center gap-3 border-b border-gray-100 dark:border-gray-700">
-          <div className="bg-gradient-to-br from-blue-600 to-indigo-600 p-2.5 rounded-xl shadow-lg shadow-blue-500/30 shrink-0">
-            <GraduationCap className="text-white w-6 h-6" />
-          </div>
-          <span className="font-bold text-xl text-gray-800 dark:text-white hidden lg:block tracking-tight">E Learning</span>
+      <aside className="w-20 lg:w-72 bg-white dark:bg-[#0f172a] border-r border-gray-200 dark:border-gray-800 flex flex-col z-20 shadow-xl">
+        <div className="p-6 flex items-center gap-3 border-b dark:border-gray-800">
+          <div className="bg-indigo-600 p-2 rounded-xl text-white"><GraduationCap /></div>
+          <span className="font-bold text-xl dark:text-white hidden lg:block">E-Learning</span>
         </div>
         
         <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
-          <p className="px-4 text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2 hidden lg:block">Menú</p>
-          
-          <button 
-            onClick={() => {
-              setView('courses')
-              if (user) fetchCourses(profile?.role, user.id) // Refrescar al hacer clic
-            }} 
-            className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all duration-200 group ${
-              view === 'courses' 
-              ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 shadow-sm font-semibold' 
-              : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:translate-x-1'
-            }`}
-          >
+          <button onClick={() => setView('courses')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${view === 'courses' ? 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800'}`}>
             <BookOpen className="w-5 h-5" /> <span className="hidden lg:block">Mis Cursos</span>
           </button>
           
-          {profile!.role === 'student' && (
-             <button onClick={() => setView('create')} className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all duration-200 group ${
-              view === 'create' ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 shadow-sm font-semibold' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:translate-x-1'
-             }`}>
-               <Search className="w-5 h-5" /> <span className="hidden lg:block">Explorar</span>
-             </button>
-          )}
-
-          {profile!.role === 'teacher' && (
-            <>
-              <button onClick={() => setView('create')} className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all duration-200 group ${
-                view === 'create' ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 shadow-sm font-semibold' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:translate-x-1'
-              }`}>
-                <Plus className="w-5 h-5" /> <span className="hidden lg:block">Crear Curso</span>
-              </button>
-              <button onClick={() => setView('schedule')} className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all duration-200 group ${
-                view === 'schedule' ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 shadow-sm font-semibold' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:translate-x-1'
-              }`}>
-                <CalendarIcon className="w-5 h-5" /> <span className="hidden lg:block">Programar</span>
-              </button>
-            </>
-          )}
-
-          {selectedCourse && (
-            <div className="mt-8 pt-6 border-t border-gray-100 dark:border-gray-700">
-               <p className="px-4 text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2 hidden lg:block">Activo</p>
-               <button onClick={() => setView('chat')} className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all duration-200 ${
-                 view === 'chat' ? 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400 shadow-sm font-semibold' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800'
-               }`}>
-                <Bot className="w-5 h-5" /> <span className="hidden lg:block line-clamp-1">{selectedCourse.title}</span>
-              </button>
-            </div>
-          )}
+          <button onClick={() => setView('create')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${view === 'create' ? 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800'}`}>
+            {profile?.role === 'teacher' ? <Plus className="w-5 h-5" /> : <Search className="w-5 h-5" />} 
+            <span className="hidden lg:block">{profile?.role === 'teacher' ? 'Crear Curso' : 'Explorar'}</span>
+          </button>
         </nav>
 
-        <div className="p-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-[#1e293b]/50">
-          <div className="flex items-center gap-3 mb-4 p-2 rounded-lg hover:bg-white dark:hover:bg-gray-800 transition-colors cursor-pointer">
-            <div className="w-10 h-10 bg-gradient-to-br from-green-400 to-emerald-600 rounded-full flex items-center justify-center text-white shadow-md">
-              <span className="font-bold text-sm">{profile!.full_name.substring(0,2).toUpperCase()}</span>
+        <div className="p-4 border-t dark:border-gray-800">
+          <div className="flex items-center gap-3 mb-4 p-2">
+            <div className="w-10 h-10 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-700 font-bold">
+              {profile?.full_name.substring(0,2).toUpperCase()}
             </div>
-            <div className="flex-1 min-w-0 hidden lg:block">
-              <p className="text-sm font-bold text-gray-900 dark:text-white truncate">{profile!.full_name}</p>
-              <p className="text-xs text-gray-500 dark:text-gray-400 capitalize">{profile!.role === 'teacher' ? 'Docente' : 'Estudiante'}</p>
+            <div className="hidden lg:block">
+              <p className="font-bold dark:text-white truncate w-32">{profile?.full_name}</p>
+              <p className="text-xs text-gray-500 capitalize">{profile?.role}</p>
             </div>
           </div>
-          
           <div className="flex gap-2">
-             <button
-              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-              className="flex-1 flex items-center justify-center p-2 rounded-lg bg-white dark:bg-gray-800 border dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:shadow-md transition-all"
-            >
-              {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
-            </button>
-            <button 
-              onClick={() => supabase.auth.signOut().then(() => router.push('/'))} 
-              className="flex-1 flex items-center justify-center p-2 rounded-lg bg-red-50 dark:bg-red-900/20 text-red-500 hover:bg-red-100 dark:hover:bg-red-900/30 transition-all"
-              title="Cerrar Sesión"
-            >
-              <LogOut className="w-5 h-5" />
-            </button>
+            <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} className="flex-1 p-2 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 flex justify-center"><Sun className="w-5 h-5 hidden dark:block"/><Moon className="w-5 h-5 block dark:hidden"/></button>
+            <button onClick={() => supabase.auth.signOut().then(() => router.push('/'))} className="flex-1 p-2 rounded-lg bg-red-50 text-red-500 flex justify-center"><LogOut className="w-5 h-5"/></button>
           </div>
         </div>
       </aside>
 
       {/* CONTENIDO PRINCIPAL */}
-      <main className="flex-1 overflow-hidden relative flex flex-col">
-        {/* Header Móvil / Título de Sección */}
-        <header className="h-16 bg-white/80 dark:bg-[#1e293b]/80 backdrop-blur-md border-b border-gray-200 dark:border-gray-700 flex items-center justify-between px-8 z-10">
-          <h2 className="text-xl font-bold text-gray-800 dark:text-white flex items-center gap-2">
-            {view === 'courses' && <><Book className="w-5 h-5 text-blue-500" /> Mis Cursos</>}
-            {view === 'create' && <><Plus className="w-5 h-5 text-green-500" /> {profile!.role === 'teacher' ? 'Nuevo Curso' : 'Explorar'}</>}
-            {view === 'chat' && <><Bot className="w-5 h-5 text-indigo-500" /> Tutor IA</>}
-            {view === 'schedule' && <><CalendarIcon className="w-5 h-5 text-purple-500" /> Programar Sesión</>}
-          </h2>
-        </header>
-
-        <div className="flex-1 overflow-y-auto p-4 md:p-8 scroll-smooth">
-          
-          {/* VISTA CURSOS */}
-          {view === 'courses' && (
-            <div className="max-w-7xl mx-auto">
-              {myCourses.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-20 bg-white dark:bg-gray-800 rounded-3xl border-2 border-dashed border-gray-300 dark:border-gray-700">
-                  <div className="bg-gray-100 dark:bg-gray-700 p-6 rounded-full mb-4">
-                    <Book className="w-10 h-10 text-gray-400" />
-                  </div>
-                  <h3 className="text-lg font-bold text-gray-700 dark:text-gray-200">Todo limpio por aquí</h3>
-                  <p className="text-gray-500 dark:text-gray-400 mb-6">No tienes cursos activos en este momento.</p>
-                  <button onClick={() => setView('create')} className="px-6 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors">
-                    {profile!.role === 'teacher' ? 'Crear mi primer curso' : 'Buscar cursos'}
-                  </button>
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                  {myCourses.map((course) => (
-                    <div key={course.id} className="group bg-white dark:bg-gray-800 rounded-2xl shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-300 border border-gray-100 dark:border-gray-700 overflow-hidden flex flex-col">
-                      <div className="h-32 bg-gradient-to-r from-blue-500 to-indigo-600 relative p-6 flex flex-col justify-end">
-                         <div className="absolute top-4 right-4 bg-white/20 backdrop-blur-md p-1.5 rounded-lg text-white opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer">
-                           <MoreVertical className="w-5 h-5" />
-                         </div>
-                         <h3 className="font-bold text-xl text-white tracking-wide shadow-sm">{course.title}</h3>
-                         {/* Mostrar nombre del docente */}
-                         {course.profiles && (
-                           <div className="text-white/90 text-xs flex items-center gap-1 mt-1">
-                             <User className="w-3 h-3" /> {course.profiles.full_name}
-                           </div>
-                         )}
-                      </div>
-                      <div className="p-6 flex-1 flex flex-col">
-                        <p className="text-gray-600 dark:text-gray-300 text-sm mb-6 line-clamp-3 leading-relaxed flex-1">
-                          {course.description}
-                        </p>
-                        
-                        {/* Rating (Visual) */}
-                        <div className="flex gap-1 mb-4 text-yellow-400">
-                          <Star className="w-4 h-4 fill-current" />
-                          <Star className="w-4 h-4 fill-current" />
-                          <Star className="w-4 h-4 fill-current" />
-                          <Star className="w-4 h-4 fill-current" />
-                          <Star className="w-4 h-4 text-gray-300 dark:text-gray-600" />
-                          <span className="text-xs text-gray-400 ml-1">(4.0)</span>
-                        </div>
-
-                        <button 
-                          onClick={() => {
-                            setSelectedCourse(course)
-                            setView('chat')
-                            setMessages([])
-                            if (profile?.role === 'student') initAiConversation(course)
-                          }}
-                          className="w-full py-3 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 bg-gray-50 dark:bg-gray-700 text-gray-700 dark:text-white group-hover:bg-blue-600 group-hover:text-white transition-all"
-                        >
-                          <Bot className="w-4 h-4" /> Entrar al Aula
-                        </button>
-                      </div>
+      <main className="flex-1 flex flex-col overflow-hidden relative">
+        
+        {/* VISTA: LISTA DE CURSOS */}
+        {view === 'courses' && (
+          <div className="flex-1 overflow-y-auto p-8">
+            <h1 className="text-2xl font-bold mb-6 dark:text-white">Tu Aprendizaje</h1>
+            {myCourses.length === 0 ? (
+              <div className="text-center py-20 bg-white dark:bg-gray-800 rounded-2xl border-2 border-dashed border-gray-200 dark:border-gray-700">
+                <p className="text-gray-500 mb-4">No tienes cursos activos.</p>
+                <button onClick={() => setView('create')} className="text-indigo-600 font-bold hover:underline">Empieza ahora</button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {myCourses.map(course => (
+                  <div key={course.id} className="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border dark:border-gray-700 overflow-hidden hover:shadow-lg transition-all group">
+                    <div className={`h-32 p-6 flex flex-col justify-end relative ${
+                      course.category === 'math' ? 'bg-gradient-to-r from-blue-500 to-cyan-500' :
+                      course.category === 'programming' ? 'bg-gradient-to-r from-slate-700 to-slate-900' :
+                      course.category === 'letters' ? 'bg-gradient-to-r from-amber-500 to-orange-600' :
+                      'bg-gradient-to-r from-indigo-500 to-purple-600'
+                    }`}>
+                       <span className="absolute top-4 right-4 bg-white/20 text-white text-xs px-2 py-1 rounded backdrop-blur-sm uppercase font-bold">{course.category}</span>
+                       <h3 className="text-white font-bold text-xl">{course.title}</h3>
+                       <p className="text-white/80 text-xs">{course.profiles?.full_name}</p>
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* VISTA PROGRAMAR SESIONES (DOCENTE) */}
-          {view === 'schedule' && profile?.role === 'teacher' && (
-             <div className="max-w-2xl mx-auto bg-white dark:bg-gray-800 p-8 rounded-3xl shadow-lg border border-gray-100 dark:border-gray-700">
-                <h2 className="text-2xl font-bold text-gray-800 dark:text-white mb-6 flex items-center gap-2">
-                  <CalendarIcon className="w-6 h-6 text-purple-600" /> Programar Tutoría Personalizada
-                </h2>
-                <div className="space-y-4">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Fecha</label>
-                      <input 
-                        type="date"
-                        className="w-full px-4 py-2 rounded-xl bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 outline-none dark:text-white"
-                        value={sessionDate}
-                        onChange={(e) => setSessionDate(e.target.value)}
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Hora</label>
-                      <input 
-                        type="time"
-                        className="w-full px-4 py-2 rounded-xl bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 outline-none dark:text-white"
-                        value={sessionTime}
-                        onChange={(e) => setSessionTime(e.target.value)}
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Enlace de Reunión (Meet/Zoom)</label>
-                    <input 
-                      type="url"
-                      placeholder="https://meet.google.com/..."
-                      className="w-full px-4 py-2 rounded-xl bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 outline-none dark:text-white"
-                      value={sessionLink}
-                      onChange={(e) => setSessionLink(e.target.value)}
-                    />
-                  </div>
-                  <button 
-                    onClick={scheduleSession}
-                    className="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 rounded-xl transition-all"
-                  >
-                    Confirmar Horario
-                  </button>
-                </div>
-             </div>
-          )}
-
-          {/* VISTA CREAR / EXPLORAR */}
-          {view === 'create' && (
-             <div className="max-w-4xl mx-auto">
-                {profile!.role === 'teacher' ? (
-                  <div className="bg-white dark:bg-gray-800 p-8 rounded-3xl shadow-lg border border-gray-100 dark:border-gray-700">
-                    <div className="mb-8 border-b dark:border-gray-700 pb-4 flex justify-between items-center">
-                      <div>
-                        <h2 className="text-2xl font-bold text-gray-800 dark:text-white">Crear Nuevo Curso</h2>
-                        <p className="text-gray-500 dark:text-gray-400">Diseña el contenido para tus estudiantes</p>
-                      </div>
-                      {/* Botón de Ideas IA */}
-                      <button onClick={generateTeacherPrompts} className="flex items-center gap-2 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400 px-4 py-2 rounded-xl font-bold text-sm hover:scale-105 transition-transform">
-                        <Lightbulb className="w-4 h-4" /> Generar Ideas IA
+                    <div className="p-6">
+                      <p className="text-gray-600 dark:text-gray-300 text-sm mb-4 line-clamp-2">{course.description}</p>
+                      <button 
+                        onClick={() => {
+                          setSelectedCourse(course)
+                          setView('course_detail')
+                          setMessages([])
+                          fetchSessions(course.id)
+                          if(profile?.role === 'student') initAiConversation(course)
+                        }}
+                        className="w-full py-2 bg-gray-50 dark:bg-gray-700 text-gray-700 dark:text-white rounded-lg font-semibold hover:bg-indigo-600 hover:text-white transition-colors"
+                      >
+                        Ingresar al Aula
                       </button>
                     </div>
-                    <div className="space-y-6">
-                      <div>
-                        <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Título del Curso</label>
-                        <input 
-                           className="w-full px-5 py-3 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition-all dark:text-white"
-                           value={newCourseTitle}
-                           onChange={e => setNewCourseTitle(e.target.value)}
-                           placeholder="Ej: Matemáticas Avanzadas"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Descripción Detallada</label>
-                        <textarea 
-                           className="w-full px-5 py-3 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl h-40 focus:ring-2 focus:ring-blue-500 outline-none transition-all dark:text-white resize-none"
-                           value={newCourseDesc}
-                           onChange={e => setNewCourseDesc(e.target.value)}
-                           placeholder="Describe los objetivos y temas del curso..."
-                        />
-                      </div>
-                      <div className="flex justify-end pt-4">
-                         <button onClick={createCourse} className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-xl font-bold shadow-lg shadow-blue-500/30 transition-all hover:scale-105">
-                           Publicar Curso
-                         </button>
-                      </div>
-                    </div>
                   </div>
-                ) : (
-                   <div>
-                      <h2 className="text-2xl font-bold text-gray-800 dark:text-white mb-6">Explorar Catálogo</h2>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        {courses.map(course => (
-                          <div key={course.id} className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 flex flex-col">
-                            <div className="flex justify-between items-start mb-4">
-                               <div>
-                                 <h3 className="font-bold text-lg text-gray-800 dark:text-white">{course.title}</h3>
-                                 {course.profiles && <p className="text-xs text-gray-500 mt-1">Por: {course.profiles.full_name}</p>}
-                               </div>
-                               <span className="bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-xs px-2 py-1 rounded-md font-bold">Curso</span>
-                            </div>
-                            <p className="text-gray-600 dark:text-gray-400 text-sm mb-6 flex-1">{course.description}</p>
-                            
-                            {myCourses.find(c => c.id === course.id) ? (
-                              <button disabled className="w-full py-2.5 bg-green-100 dark:bg-green-900/20 text-green-600 dark:text-green-400 rounded-xl font-semibold text-sm cursor-default border border-green-200 dark:border-green-800/30">
-                                ✓ Ya estás inscrito
-                              </button>
-                            ) : (
-                              <button onClick={() => enrollCourse(course.id)} className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold text-sm shadow-md shadow-blue-500/20 transition-all">
-                                Inscribirse Ahora
-                              </button>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                   </div>
-                )}
-             </div>
-          )}
-
-          {/* VISTA CHAT (ESTILO BUBBLES + OPCIONES + CÓDIGO) */}
-          {view === 'chat' && selectedCourse && (
-            <div className="h-[calc(100vh-140px)] flex flex-col bg-white dark:bg-gray-800 rounded-3xl shadow-xl overflow-hidden border border-gray-200 dark:border-gray-700">
-              {/* Chat Header */}
-              <div className="p-4 bg-indigo-600 flex items-center gap-4 shadow-md z-10">
-                 <div className="bg-white/20 p-2 rounded-full backdrop-blur-sm">
-                   <Bot className="text-white w-6 h-6" />
-                 </div>
-                 <div>
-                   <h3 className="font-bold text-white text-lg leading-none">{selectedCourse.title}</h3>
-                   <span className="text-indigo-200 text-xs flex items-center gap-1">
-                     <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span> Tutor Activo
-                   </span>
-                 </div>
+                ))}
               </div>
+            )}
+          </div>
+        )}
 
-              {/* Chat Area */}
-              <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-gray-50 dark:bg-[#0b1120] relative">
-                <div className="absolute inset-0 opacity-5 dark:opacity-5 pointer-events-none" style={{backgroundImage: "radial-gradient(#6366f1 1px, transparent 1px)", backgroundSize: "20px 20px"}}></div>
+        {/* VISTA: DETALLE DEL CURSO (CHAT + ASESORÍAS) */}
+        {view === 'course_detail' && selectedCourse && (
+          <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+            
+            {/* AREA DE CHAT (IZQUIERDA / CENTRO) */}
+            <div className="flex-1 flex flex-col bg-gray-50 dark:bg-[#0b1120] relative">
+               {/* Header del Chat */}
+               <div className="h-16 bg-white dark:bg-gray-900 border-b dark:border-gray-800 flex items-center justify-between px-6 shrink-0">
+                 <div className="flex items-center gap-3">
+                   <button onClick={() => setView('courses')} className="text-gray-400 hover:text-gray-600">← Volver</button>
+                   <div>
+                     <h2 className="font-bold dark:text-white flex items-center gap-2">
+                       {selectedCourse.title}
+                       <span className={`w-2 h-2 rounded-full ${aiLoading ? 'bg-green-400 animate-pulse' : 'bg-gray-300'}`}></span>
+                     </h2>
+                     <p className="text-xs text-gray-500 uppercase font-semibold tracking-wider">{selectedCourse.category}</p>
+                   </div>
+                 </div>
+               </div>
 
+               {/* Mensajes */}
+               <div className="flex-1 overflow-y-auto p-6 space-y-6">
                  {messages.map((msg, i) => (
-                   <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'} animate-in fade-in slide-in-from-bottom-2 duration-300`}>
-                     <div className={`flex items-end gap-2 max-w-[85%] ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
-                       <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 shadow-sm ${
-                         msg.role === 'user' ? 'bg-blue-500' : 'bg-indigo-600'
-                       }`}>
-                         {msg.role === 'user' ? <User className="w-4 h-4 text-white" /> : <Bot className="w-4 h-4 text-white" />}
+                   <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'} max-w-3xl mx-auto w-full animate-in slide-in-from-bottom-2`}>
+                     <div className={`flex gap-3 max-w-[90%] ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
+                       <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${msg.role === 'user' ? 'bg-indigo-500' : 'bg-green-600'}`}>
+                         {msg.role === 'user' ? <User className="text-white w-4 h-4"/> : <Bot className="text-white w-4 h-4"/>}
                        </div>
+                       
+                       <div className="flex flex-col gap-2 w-full">
+                         {/* Burbuja de Texto */}
+                         <div className={`p-4 rounded-2xl shadow-sm ${
+                           msg.role === 'user' 
+                             ? 'bg-indigo-600 text-white rounded-tr-none' 
+                             : 'bg-white dark:bg-gray-800 dark:text-gray-100 rounded-tl-none border dark:border-gray-700'
+                         }`}>
+                           <div className="text-sm leading-relaxed whitespace-pre-wrap">
+                             {msg.role === 'model' ? renderFormattedText(msg.content, selectedCourse.category) : msg.content}
+                           </div>
+                         </div>
 
-                       <div className={`p-4 rounded-2xl shadow-sm relative ${
-                         msg.role === 'user' 
-                           ? 'bg-blue-600 text-white rounded-br-none' 
-                           : 'bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-100 rounded-bl-none border border-gray-100 dark:border-gray-600'
-                       }`}>
-                         <div className="whitespace-pre-wrap text-sm leading-relaxed">{msg.content}</div>
+                         {/* OPCIONES (BOTONES DEBAJO) */}
+                         {msg.options && (
+                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-1">
+                             {msg.options.map((opt, idx) => (
+                               <button 
+                                 key={idx} 
+                                 onClick={() => handleSendMessage(opt)}
+                                 className="bg-white dark:bg-gray-800 border-2 border-indigo-100 dark:border-indigo-900/30 p-3 rounded-xl text-left text-sm hover:border-indigo-500 dark:hover:border-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-all flex items-center gap-2 group"
+                               >
+                                 <span className="bg-indigo-100 text-indigo-700 w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold group-hover:bg-indigo-600 group-hover:text-white transition-colors">{String.fromCharCode(65 + idx)}</span>
+                                 <span className="dark:text-gray-300">{opt}</span>
+                               </button>
+                             ))}
+                           </div>
+                         )}
+
+                         {/* EDITOR DE CÓDIGO (SI APLICA) */}
+                         {msg.isCodeRequest && (
+                           <div className="w-full bg-[#1e1e1e] rounded-xl overflow-hidden shadow-lg border border-gray-700 mt-2">
+                             <div className="bg-[#2d2d2d] px-4 py-2 flex items-center gap-2 text-gray-400 text-xs">
+                               <CodeIcon className="w-3 h-3" /> Editor de Solución
+                             </div>
+                             <textarea 
+                               disabled={!codeEditorVisible && i !== messages.length - 1}
+                               className="w-full bg-transparent text-green-400 font-mono text-sm p-4 h-48 outline-none resize-none"
+                               placeholder="// Escribe tu código aquí..."
+                               value={inputMsg}
+                               onChange={(e) => setInputMsg(e.target.value)}
+                             />
+                             {codeEditorVisible && i === messages.length - 1 && (
+                               <div className="p-2 bg-[#2d2d2d] flex justify-end">
+                                 <button onClick={() => handleSendMessage()} className="bg-green-600 hover:bg-green-700 text-white px-4 py-1.5 rounded-lg text-sm font-bold flex items-center gap-2">
+                                   <Play className="w-3 h-3" /> Ejecutar y Enviar
+                                 </button>
+                               </div>
+                             )}
+                           </div>
+                         )}
                        </div>
                      </div>
-
-                     {/* Botones de Opciones (Solo si es mensaje del modelo y tiene opciones) */}
-                     {msg.role === 'model' && msg.options && (
-                       <div className="flex flex-wrap gap-2 mt-2 ml-10">
-                         {msg.options.map((opt, idx) => (
-                           <button 
-                             key={idx}
-                             onClick={() => handleSendMessage(opt)}
-                             className="px-4 py-2 bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 rounded-lg text-sm font-semibold hover:bg-indigo-200 dark:hover:bg-indigo-900/60 transition-colors border border-indigo-200 dark:border-indigo-800"
-                           >
-                             {opt}
-                           </button>
-                         ))}
-                       </div>
-                     )}
                    </div>
                  ))}
-
-                 {aiLoading && (
-                   <div className="flex justify-start">
-                     <div className="bg-white dark:bg-gray-700 px-4 py-3 rounded-2xl rounded-bl-none border dark:border-gray-600 shadow-sm flex gap-2 items-center ml-10">
-                       <div className="w-2 h-2 bg-indigo-500 rounded-full animate-bounce" />
-                       <div className="w-2 h-2 bg-indigo-500 rounded-full animate-bounce delay-75" />
-                       <div className="w-2 h-2 bg-indigo-500 rounded-full animate-bounce delay-150" />
-                     </div>
-                   </div>
-                 )}
                  <div ref={chatEndRef} />
-              </div>
+               </div>
 
-              {/* Input Area (Texto o Código) */}
-              <div className="p-4 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700">
-                {codeMode ? (
-                  <div className="flex flex-col gap-2 bg-gray-900 p-4 rounded-xl border border-gray-700">
-                    <div className="flex items-center gap-2 text-gray-400 text-xs uppercase font-bold tracking-wider mb-1">
-                      <CodeIcon className="w-4 h-4" /> Editor de Código
-                    </div>
-                    <textarea 
-                      className="w-full bg-transparent text-green-400 font-mono text-sm outline-none resize-none h-32"
-                      placeholder="// Escribe tu código aquí..."
-                      value={inputMsg}
-                      onChange={e => setInputMsg(e.target.value)}
-                    />
-                    <button 
-                      onClick={() => handleSendMessage()}
-                      className="self-end bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-bold transition-all"
-                    >
-                      Enviar Código
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex gap-3 items-end bg-gray-50 dark:bg-gray-900 p-2 rounded-3xl border border-gray-200 dark:border-gray-700 focus-within:ring-2 focus-within:ring-indigo-500 transition-all">
-                    <input 
-                      className="flex-1 bg-transparent px-4 py-3 max-h-32 outline-none text-gray-800 dark:text-white placeholder-gray-400 resize-none"
-                      placeholder="Escribe tu mensaje aquí..."
-                      value={inputMsg}
-                      onChange={e => setInputMsg(e.target.value)}
-                      onKeyDown={e => e.key === 'Enter' && handleSendMessage()}
-                      disabled={aiLoading}
-                    />
-                    <button 
-                      onClick={() => handleSendMessage()}
-                      disabled={aiLoading || !inputMsg.trim()}
-                      className="bg-indigo-600 hover:bg-indigo-700 text-white p-3 rounded-full disabled:opacity-50 disabled:cursor-not-allowed shadow-md transition-all hover:scale-105 active:scale-95 mb-1 mr-1"
-                    >
-                      <Send className="w-5 h-5" />
-                    </button>
-                  </div>
-                )}
-              </div>
+               {/* Input Area (Solo si no hay editor de código activo) */}
+               {!codeEditorVisible && (
+                 <div className="p-4 bg-white dark:bg-gray-900 border-t dark:border-gray-800 max-w-3xl mx-auto w-full">
+                   <div className="flex gap-2 bg-gray-100 dark:bg-gray-800 p-2 rounded-full border dark:border-gray-700 focus-within:ring-2 focus-within:ring-indigo-500">
+                     <input 
+                       className="flex-1 bg-transparent px-4 py-2 outline-none dark:text-white"
+                       placeholder="Escribe tu duda..."
+                       value={inputMsg}
+                       onChange={e => setInputMsg(e.target.value)}
+                       onKeyDown={e => e.key === 'Enter' && handleSendMessage()}
+                       disabled={aiLoading}
+                     />
+                     <button onClick={() => handleSendMessage()} disabled={!inputMsg.trim()} className="p-2 bg-indigo-600 rounded-full text-white hover:bg-indigo-700 disabled:opacity-50"><Send className="w-4 h-4"/></button>
+                   </div>
+                 </div>
+               )}
             </div>
-          )}
-        </div>
+
+            {/* PANEL DERECHO: ASESORÍAS (DENTRO DEL CURSO) */}
+            <div className="w-full md:w-80 bg-white dark:bg-[#0f172a] border-l dark:border-gray-800 overflow-y-auto p-6 shrink-0">
+               <h3 className="font-bold text-lg mb-4 dark:text-white flex items-center gap-2">
+                 <Video className="w-5 h-5 text-purple-500" /> Asesorías
+               </h3>
+               
+               {/* Lista de Sesiones */}
+               <div className="space-y-3 mb-6">
+                 {courseSessions.length === 0 ? (
+                   <p className="text-sm text-gray-400 text-center py-4">No hay sesiones programadas.</p>
+                 ) : (
+                   courseSessions.map((session, idx) => (
+                     <div key={idx} className="bg-purple-50 dark:bg-purple-900/10 border border-purple-100 dark:border-purple-900/30 p-3 rounded-xl">
+                       <p className="font-bold text-purple-700 dark:text-purple-300 text-sm">{session.date} - {session.time}</p>
+                       <a href={session.link} target="_blank" className="text-xs text-purple-500 underline mt-1 block hover:text-purple-700">Unirse a la reunión</a>
+                     </div>
+                   ))
+                 )}
+               </div>
+
+               {/* Formulario Crear Sesión (Solo Docente) */}
+               {profile?.role === 'teacher' && selectedCourse.created_by === user?.id && (
+                 <div className="border-t dark:border-gray-800 pt-4">
+                   <button 
+                     onClick={() => setShowSessionForm(!showSessionForm)}
+                     className="w-full py-2 border-2 border-dashed border-gray-300 dark:border-gray-700 rounded-xl text-gray-500 text-sm font-semibold hover:border-purple-500 hover:text-purple-500 transition-colors flex items-center justify-center gap-2"
+                   >
+                     <Plus className="w-4 h-4" /> Nueva Asesoría
+                   </button>
+                   
+                   {showSessionForm && (
+                     <div className="mt-4 space-y-3 bg-gray-50 dark:bg-gray-800 p-4 rounded-xl animate-in slide-in-from-top-2">
+                       <input type="date" className="w-full p-2 rounded-lg border text-sm dark:bg-gray-900 dark:border-gray-700 dark:text-white" value={sessionDate} onChange={e => setSessionDate(e.target.value)} />
+                       <input type="time" className="w-full p-2 rounded-lg border text-sm dark:bg-gray-900 dark:border-gray-700 dark:text-white" value={sessionTime} onChange={e => setSessionTime(e.target.value)} />
+                       <input type="url" placeholder="Link (Zoom/Meet)" className="w-full p-2 rounded-lg border text-sm dark:bg-gray-900 dark:border-gray-700 dark:text-white" value={sessionLink} onChange={e => setSessionLink(e.target.value)} />
+                       <button onClick={scheduleSession} className="w-full bg-purple-600 text-white py-2 rounded-lg text-sm font-bold hover:bg-purple-700">Guardar</button>
+                     </div>
+                   )}
+                 </div>
+               )}
+            </div>
+          </div>
+        )}
+
+        {/* VISTA: CREAR CURSO */}
+        {view === 'create' && (
+          <div className="flex-1 overflow-y-auto p-8 flex justify-center">
+             <div className="w-full max-w-2xl bg-white dark:bg-gray-800 rounded-2xl shadow-lg p-8 h-fit">
+               <div className="flex justify-between items-center mb-6">
+                 <h2 className="text-2xl font-bold dark:text-white">{profile?.role === 'teacher' ? 'Crear Nuevo Curso' : 'Explorar Cursos'}</h2>
+                 <button onClick={() => setView('courses')} className="text-gray-400 hover:text-gray-600">Cancelar</button>
+               </div>
+
+               {profile?.role === 'teacher' ? (
+                 <div className="space-y-5">
+                   <div>
+                     <label className="block text-sm font-bold mb-2 dark:text-gray-300">Título</label>
+                     <input className="w-full p-3 border rounded-xl dark:bg-gray-900 dark:border-gray-700 dark:text-white" placeholder="Ej: Cálculo I" value={newCourseTitle} onChange={e => setNewCourseTitle(e.target.value)} />
+                   </div>
+                   
+                   <div className="grid grid-cols-3 gap-3">
+                     <button onClick={() => setNewCourseCategory('math')} className={`p-3 rounded-xl border text-center text-sm font-bold transition-all ${newCourseCategory === 'math' ? 'bg-blue-100 border-blue-500 text-blue-700' : 'hover:bg-gray-50 dark:hover:bg-gray-700 dark:border-gray-700 dark:text-gray-300'}`}>📐 Matemáticas</button>
+                     <button onClick={() => setNewCourseCategory('letters')} className={`p-3 rounded-xl border text-center text-sm font-bold transition-all ${newCourseCategory === 'letters' ? 'bg-amber-100 border-amber-500 text-amber-700' : 'hover:bg-gray-50 dark:hover:bg-gray-700 dark:border-gray-700 dark:text-gray-300'}`}>📚 Letras</button>
+                     <button onClick={() => setNewCourseCategory('programming')} className={`p-3 rounded-xl border text-center text-sm font-bold transition-all ${newCourseCategory === 'programming' ? 'bg-slate-200 border-slate-600 text-slate-800' : 'hover:bg-gray-50 dark:hover:bg-gray-700 dark:border-gray-700 dark:text-gray-300'}`}>💻 Programación</button>
+                   </div>
+
+                   <div>
+                     <label className="block text-sm font-bold mb-2 dark:text-gray-300">Descripción</label>
+                     <textarea className="w-full p-3 border rounded-xl h-32 dark:bg-gray-900 dark:border-gray-700 dark:text-white" placeholder="¿De qué trata el curso?" value={newCourseDesc} onChange={e => setNewCourseDesc(e.target.value)} />
+                   </div>
+                   <button onClick={createCourse} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 shadow-lg shadow-indigo-500/30">Publicar Curso</button>
+                 </div>
+               ) : (
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                   {courses.map(c => (
+                     <div key={c.id} className="border dark:border-gray-700 p-4 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
+                       <div className="flex justify-between">
+                         <h3 className="font-bold dark:text-white">{c.title}</h3>
+                         <span className="text-xs uppercase bg-gray-200 dark:bg-gray-600 px-2 py-0.5 rounded font-bold">{c.category}</span>
+                       </div>
+                       <p className="text-sm text-gray-500 dark:text-gray-400 mt-2 mb-4 line-clamp-2">{c.description}</p>
+                       {myCourses.some(mc => mc.id === c.id) ? (
+                         <button disabled className="w-full py-2 bg-green-100 text-green-700 rounded-lg text-sm font-bold">Inscrito</button>
+                       ) : (
+                         <button onClick={() => enrollCourse(c.id)} className="w-full py-2 bg-indigo-600 text-white rounded-lg text-sm font-bold hover:bg-indigo-700">Inscribirse</button>
+                       )}
+                     </div>
+                   ))}
+                 </div>
+               )}
+             </div>
+          </div>
+        )}
+
       </main>
     </div>
   )
