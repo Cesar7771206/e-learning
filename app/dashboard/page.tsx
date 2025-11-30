@@ -21,7 +21,7 @@ type Course = {
   id: number, 
   title: string, 
   description: string, 
-  category: CourseCategory, // Nuevo campo
+  category: CourseCategory,
   created_by: string,
   profiles?: { full_name: string }
 }
@@ -60,7 +60,7 @@ export default function Dashboard() {
   const [courses, setCourses] = useState<Course[]>([])
   const [myCourses, setMyCourses] = useState<Course[]>([])
   const [selectedCourse, setSelectedCourse] = useState<Course | null>(null)
-  const [courseSessions, setCourseSessions] = useState<Session[]>([]) // Sesiones del curso activo
+  const [courseSessions, setCourseSessions] = useState<Session[]>([])
   
   // Formularios Curso
   const [newCourseTitle, setNewCourseTitle] = useState('')
@@ -140,22 +140,53 @@ export default function Dashboard() {
     init()
   }, [router, fetchProfile])
 
-  // --- 2. GESTIÓN DE CURSOS ---
+  // --- 2. GESTIÓN DE CURSOS (LOGICA BLINDADA) ---
   const fetchCourses = async (role: string | undefined, userId: string) => {
     try {
-      let data
+      console.log("Cargando cursos para:", role)
+      
       if (role === 'teacher') {
-        const res = await supabase.from('courses').select('*, profiles(full_name)').eq('created_by', userId)
-        data = res.data
-      } else {
-        const res = await supabase.from('enrollments').select('course_id, courses(*, profiles(full_name))').eq('student_id', userId)
-        data = res.data?.map((e: any) => e.courses).filter(Boolean)
+        // Intento 1: Con datos del perfil
+        let { data, error } = await supabase.from('courses').select('*, profiles(full_name)').eq('created_by', userId)
         
-        const all = await supabase.from('courses').select('*, profiles(full_name)')
-        setCourses(all.data || [])
+        // Intento 2 (Fallback): Sin join si falla la relación
+        if (error || !data) {
+          console.warn("Fallo carga con perfil, intentando carga simple...", error)
+          const simpleRes = await supabase.from('courses').select('*').eq('created_by', userId)
+          data = simpleRes.data
+        }
+        
+        setMyCourses(data || [])
+      } else {
+        // Estudiante: Cursos inscritos
+        let { data: enrollData, error: enrollError } = await supabase
+          .from('enrollments')
+          .select('course_id, courses(*, profiles(full_name))')
+          .eq('student_id', userId)
+
+        if (enrollError) {
+           console.warn("Fallo carga inscripciones con perfil, reintentando...", enrollError)
+           const simpleEnroll = await supabase
+            .from('enrollments')
+            .select('course_id, courses(*)')
+            .eq('student_id', userId)
+           enrollData = simpleEnroll.data
+        }
+
+        const enrolled = enrollData?.map((e: any) => e.courses).filter(Boolean) || []
+        setMyCourses(enrolled)
+        
+        // Todos los cursos (Explorar)
+        let { data: allData, error: allError } = await supabase.from('courses').select('*, profiles(full_name)')
+        if (allError) {
+           const simpleAll = await supabase.from('courses').select('*')
+           allData = simpleAll.data
+        }
+        setCourses(allData || [])
       }
-      setMyCourses(data || [])
-    } catch (err) { console.error(err) }
+    } catch (err) { 
+      console.error("Error crítico fetchCourses:", err) 
+    }
   }
 
   const createCourse = async () => {
@@ -164,15 +195,20 @@ export default function Dashboard() {
       const { error } = await supabase.from('courses').insert({
         title: newCourseTitle,
         description: newCourseDesc,
-        category: newCourseCategory, // Guardamos la categoría
+        category: newCourseCategory,
         created_by: user.id
       })
       if (error) throw error
       alert("Curso creado exitosamente")
       setNewCourseTitle('')
       setNewCourseDesc('')
-      fetchCourses('teacher', user.id)
-      setView('courses')
+      
+      // Esperamos un poco y recargamos
+      setTimeout(() => {
+        fetchCourses('teacher', user.id)
+        setView('courses')
+      }, 500)
+      
     } catch (error: any) { alert(error.message) }
   }
 
@@ -184,12 +220,9 @@ export default function Dashboard() {
     }
   }
 
-  // --- 3. GESTIÓN DE SESIONES (ASESORÍAS) ---
+  // --- 3. GESTIÓN DE SESIONES ---
   const fetchSessions = async (courseId: number) => {
-    // Simulamos fetch de DB (Deberías tener una tabla 'sessions')
-    // const { data } = await supabase.from('sessions').select('*').eq('course_id', courseId)
-    // setCourseSessions(data || [])
-    // Por ahora simulado localmente para que funcione la UI:
+    // Aquí iría el fetch real a la BD si tienes la tabla.
     console.log("Cargando sesiones para curso", courseId)
   }
 
@@ -202,7 +235,7 @@ export default function Dashboard() {
       time: sessionTime,
       link: sessionLink
     }
-    setCourseSessions(prev => [...prev, newSession]) // Simulado
+    setCourseSessions(prev => [...prev, newSession])
     alert("Sesión creada en este curso")
     setShowSessionForm(false)
   }
@@ -212,7 +245,6 @@ export default function Dashboard() {
     setAiLoading(true)
     let specializedPrompt = ""
 
-    // Prompt especializado según categoría
     if (course.category === 'math') {
       specializedPrompt = "Eres un profesor de Matemáticas. Usa formato LaTeX con doble signo de dólar ($$) para fórmulas complejas y un solo signo ($) para variables inline. Sé preciso y visual."
     } else if (course.category === 'programming') {
@@ -263,7 +295,7 @@ export default function Dashboard() {
     setMessages(prev => [...prev, newMsg])
     setInputMsg('')
     setAiLoading(true)
-    setCodeEditorVisible(false) // Ocultar editor tras enviar
+    setCodeEditorVisible(false) 
 
     const response = await chatWithGemini(finalMsg, `${selectedCourse.title} (${selectedCourse.category})`, messages)
 
@@ -275,15 +307,12 @@ export default function Dashboard() {
     setAiLoading(false)
   }
 
-  // --- RENDERIZADO DE TEXTO ENRIQUECIDO ---
   const renderFormattedText = (text: string, category: CourseCategory) => {
-    // 1. Renderizado Básico de Negritas
     const parts = text.split(/(\*\*.*?\*\*)/g)
     return parts.map((part, i) => {
       if (part.startsWith('**') && part.endsWith('**')) {
         return <strong key={i} className="text-indigo-600 dark:text-indigo-400">{part.slice(2, -2)}</strong>
       }
-      // 2. Renderizado "Simulado" de Fórmulas ($$x$$)
       if (part.includes('$$') || part.includes('$')) {
          return <span key={i} className="font-serif italic bg-yellow-50 dark:bg-yellow-900/20 px-1 rounded text-lg mx-1">{part}</span>
       }
@@ -291,7 +320,6 @@ export default function Dashboard() {
     })
   }
 
-  // --- UI PRINCIPAL ---
   if (!mounted) return null
   if (loadingProfile || fixingProfile) return <div className="h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900"><RefreshCw className="animate-spin text-blue-600 w-8 h-8"/></div>
 
@@ -306,7 +334,10 @@ export default function Dashboard() {
         </div>
         
         <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
-          <button onClick={() => setView('courses')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${view === 'courses' ? 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800'}`}>
+          <button onClick={() => {
+            setView('courses')
+            if (user && profile) fetchCourses(profile.role, user.id)
+          }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${view === 'courses' ? 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800'}`}>
             <BookOpen className="w-5 h-5" /> <span className="hidden lg:block">Mis Cursos</span>
           </button>
           
@@ -339,7 +370,16 @@ export default function Dashboard() {
         {/* VISTA: LISTA DE CURSOS */}
         {view === 'courses' && (
           <div className="flex-1 overflow-y-auto p-8">
-            <h1 className="text-2xl font-bold mb-6 dark:text-white">Tu Aprendizaje</h1>
+            <div className="flex justify-between items-center mb-6">
+              <h1 className="text-2xl font-bold dark:text-white">Tu Aprendizaje</h1>
+              <button 
+                onClick={() => user && profile && fetchCourses(profile.role, user.id)}
+                className="flex items-center gap-2 text-sm text-indigo-600 font-bold hover:bg-indigo-50 px-3 py-1 rounded-lg transition-colors"
+              >
+                <RefreshCw className="w-4 h-4" /> Actualizar
+              </button>
+            </div>
+            
             {myCourses.length === 0 ? (
               <div className="text-center py-20 bg-white dark:bg-gray-800 rounded-2xl border-2 border-dashed border-gray-200 dark:border-gray-700">
                 <p className="text-gray-500 mb-4">No tienes cursos activos.</p>
