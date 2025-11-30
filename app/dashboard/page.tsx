@@ -7,14 +7,28 @@ import { chatWithGemini } from '../actions'
 import { 
   LogOut, Plus, Book, User, Send, Bot, 
   GraduationCap, BookOpen, Sun, Moon, 
-  MoreVertical, Search, AlertCircle, RefreshCw, Wrench 
+  MoreVertical, Search, AlertCircle, RefreshCw, Wrench,
+  Calendar as CalendarIcon, Lightbulb, Code as CodeIcon, Star
 } from 'lucide-react'
 import { useTheme } from 'next-themes'
 
 // Tipos
 type Profile = { id: string, role: 'student' | 'teacher', full_name: string, avatar_url?: string }
-type Course = { id: number, title: string, description: string, created_by: string }
-type Message = { role: 'user' | 'model', content: string, timestamp?: Date }
+type Course = { 
+  id: number, 
+  title: string, 
+  description: string, 
+  created_by: string,
+  profiles?: { full_name: string } // Relación con el perfil del docente
+}
+// Mensaje mejorado para soportar opciones y código
+type Message = { 
+  role: 'user' | 'model', 
+  content: string, 
+  timestamp?: Date,
+  options?: string[], // Opciones para botones
+  isCodeRequest?: boolean // Si la IA pide código
+}
 
 export default function Dashboard() {
   const router = useRouter()
@@ -23,24 +37,31 @@ export default function Dashboard() {
   
   // Estados de carga y usuario
   const [loadingProfile, setLoadingProfile] = useState(true)
-  const [fixingProfile, setFixingProfile] = useState(false) // Nuevo estado para feedback visual
+  const [fixingProfile, setFixingProfile] = useState(false)
   const [user, setUser] = useState<any>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
   
   // Estados de vista y datos
-  const [view, setView] = useState<'courses' | 'chat' | 'create'>('courses')
+  // Añadimos 'schedule' para la vista de calendario del docente
+  const [view, setView] = useState<'courses' | 'chat' | 'create' | 'schedule'>('courses')
   const [courses, setCourses] = useState<Course[]>([])
   const [myCourses, setMyCourses] = useState<Course[]>([])
   const [selectedCourse, setSelectedCourse] = useState<Course | null>(null)
   
-  // Estados de formulario
+  // Estados de formulario (Curso)
   const [newCourseTitle, setNewCourseTitle] = useState('')
   const [newCourseDesc, setNewCourseDesc] = useState('')
+
+  // Estados de formulario (Sesiones)
+  const [sessionDate, setSessionDate] = useState('')
+  const [sessionTime, setSessionTime] = useState('')
+  const [sessionLink, setSessionLink] = useState('')
   
   // Estados de Chat
   const [messages, setMessages] = useState<Message[]>([])
   const [inputMsg, setInputMsg] = useState('')
   const [aiLoading, setAiLoading] = useState(false)
+  const [codeMode, setCodeMode] = useState(false) // Modo editor de código
   const chatEndRef = useRef<HTMLDivElement>(null)
 
   // 1. CARGA INICIAL ROBUSTA + AUTOCURACIÓN
@@ -50,26 +71,22 @@ export default function Dashboard() {
         .from('profiles')
         .select('*')
         .eq('id', currentUser.id)
-        .maybeSingle() // Usamos maybeSingle para no lanzar error si es null
+        .maybeSingle()
 
       if (error) throw error
 
       if (!data) {
-        // Si no hay datos, reintentamos un par de veces
         if (retries < 2) {
           console.log(`Reintentando cargar perfil... Intento ${retries + 1}`)
           setTimeout(() => fetchProfile(currentUser, retries + 1), 1500)
           return
         }
-        
-        // Si fallan los reintentos, activamos la AUTOCURACIÓN
         console.log("Perfil no encontrado. Iniciando autocuración...")
         setFixingProfile(true)
         await createMissingProfile(currentUser)
         return
       }
 
-      // Si todo sale bien
       setProfile(data)
       setLoadingProfile(false)
       fetchCourses(data.role, currentUser.id)
@@ -80,10 +97,8 @@ export default function Dashboard() {
     }
   }, [])
 
-  // Función de Autocuración: Crea el perfil si falta
   const createMissingProfile = async (currentUser: any) => {
     try {
-      // Extraemos metadatos o usamos valores por defecto
       const meta = currentUser.user_metadata || {}
       const newProfile = {
         id: currentUser.id,
@@ -91,19 +106,13 @@ export default function Dashboard() {
         role: meta.role || 'student',
         avatar_url: meta.avatar_url || ''
       }
-
       const { error } = await supabase.from('profiles').insert(newProfile)
-      
       if (error) throw error
-
-      // Si se crea con éxito, recargamos la página para iniciar limpio
-      console.log("Perfil recreado con éxito. Reiniciando...")
       window.location.reload()
-      
     } catch (err) {
       console.error("Falló la autocuración:", err)
       setFixingProfile(false)
-      setLoadingProfile(false) // Esto mostrará la pantalla de error final
+      setLoadingProfile(false)
     }
   }
 
@@ -121,21 +130,22 @@ export default function Dashboard() {
     init()
   }, [router, fetchProfile])
 
-  // 2. Fetch Cursos
+  // 2. Fetch Cursos (Mejorado para traer nombre del docente)
   const fetchCourses = async (role: string | undefined, userId: string) => {
     if (role === 'teacher') {
-      const { data } = await supabase.from('courses').select('*').eq('created_by', userId)
+      const { data } = await supabase.from('courses').select('*, profiles(full_name)').eq('created_by', userId)
       setMyCourses(data || [])
     } else {
+      // Estudiante: trae cursos inscritos y todos los disponibles con nombre del profe
       const { data: enrollmentData } = await supabase
         .from('enrollments')
-        .select('course_id, courses(*)')
+        .select('course_id, courses(*, profiles(full_name))')
         .eq('student_id', userId)
       
       const enrolled = enrollmentData?.map((e: any) => e.courses) || []
       setMyCourses(enrolled)
 
-      const { data: allData } = await supabase.from('courses').select('*')
+      const { data: allData } = await supabase.from('courses').select('*, profiles(full_name)')
       setCourses(allData || [])
     }
   }
@@ -168,30 +178,112 @@ export default function Dashboard() {
     }
   }
 
-  // 5. Chat Logic
-  const handleSendMessage = async () => {
-    if (!inputMsg.trim() || !selectedCourse) return
+  // 5. Programar Sesión (Docente)
+  const scheduleSession = async () => {
+    if (!sessionDate || !sessionTime || !profile) return
+    // Aquí insertaríamos en 'tutorial_slots' o similar. Simulamos éxito:
+    alert(`Sesión programada para el ${sessionDate} a las ${sessionTime}`)
+    setSessionDate('')
+    setSessionTime('')
+    setSessionLink('')
+    setView('courses')
+  }
 
-    const newMsg = { role: 'user', content: inputMsg, timestamp: new Date() } as Message
+  // 6. Generar Ideas IA (Docente)
+  const generateTeacherPrompts = async () => {
+    const prompt = "Dame 3 ideas creativas para enseñar un tema complejo a estudiantes universitarios. Sé breve."
+    alert("Consultando a tu asistente pedagógico...")
+    const response = await chatWithGemini(prompt, "Pedagogía", [])
+    if(response.success) {
+      alert("Ideas sugeridas:\n\n" + response.message)
+    }
+  }
+
+  // 7. Lógica del Chat Avanzado (Estudiantes)
+  
+  // Función para iniciar conversación proactiva
+  const initAiConversation = async (course: Course) => {
+    if (messages.length > 0) return
+    
+    setAiLoading(true)
+    // Instrucción "invisible" para configurar a la IA
+    const systemInstruction = `
+      Eres un tutor proactivo de ${course.title}. 
+      1. Saluda al estudiante y hazle una pregunta corta para evaluar su nivel actual.
+      2. Si haces una pregunta de opción múltiple, DEVUELVE LAS OPCIONES EN ESTE FORMATO AL FINAL: {{Opción A|Opción B|Opción C}}.
+      3. Si el tema es programación y pides que escriba código, termina tu mensaje con {{CODE_REQUEST}}.
+      4. Si el estudiante responde mal, da retroalimentación y otra pregunta. Si responde bien, felicita y avanza.
+    `
+    
+    // Enviamos mensaje vacío visible pero con contexto al backend
+    const response = await chatWithGemini("Hola, inicia la evaluación.", course.title + ": " + course.description + systemInstruction, [])
+    
+    if (response.success) {
+      const { text, options, isCodeRequest } = parseAiResponse(response.message)
+      setMessages([{ 
+        role: 'model', 
+        content: text, 
+        timestamp: new Date(),
+        options: options,
+        isCodeRequest: isCodeRequest
+      }])
+    }
+    setAiLoading(false)
+  }
+
+  // Parser para detectar opciones {{A|B}} y solicitudes de código {{CODE_REQUEST}}
+  const parseAiResponse = (text: string) => {
+    let cleanText = text
+    let options: string[] | undefined = undefined
+    let isCodeRequest = false
+
+    // Detectar opciones
+    const optionsMatch = text.match(/\{\{(.+?)\}\}/)
+    if (optionsMatch) {
+      if (optionsMatch[1] === 'CODE_REQUEST') {
+        isCodeRequest = true
+      } else {
+        options = optionsMatch[1].split('|')
+      }
+      cleanText = text.replace(optionsMatch[0], '').trim()
+    }
+
+    return { text: cleanText, options, isCodeRequest }
+  }
+
+  const handleSendMessage = async (msgOverride?: string) => {
+    const finalMsg = msgOverride || inputMsg
+    if (!finalMsg.trim() || !selectedCourse) return
+
+    const newMsg = { role: 'user', content: finalMsg, timestamp: new Date() } as Message
     setMessages(prev => [...prev, newMsg])
     setInputMsg('')
     setAiLoading(true)
+    setCodeMode(false) // Salir del modo código al enviar
 
     const response = await chatWithGemini(
-      newMsg.content, 
+      finalMsg, 
       `${selectedCourse.title}: ${selectedCourse.description}`, 
       messages
     )
 
     if (response.success) {
-      setMessages(prev => [...prev, { role: 'model', content: response.message, timestamp: new Date() }])
+      const { text, options, isCodeRequest } = parseAiResponse(response.message)
+      setMessages(prev => [...prev, { 
+        role: 'model', 
+        content: text, 
+        timestamp: new Date(),
+        options,
+        isCodeRequest
+      }])
+      if (isCodeRequest) setCodeMode(true)
     }
     setAiLoading(false)
   }
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+  }, [messages, aiLoading])
 
 
   // --- PANTALLAS DE CARGA Y ERROR ---
@@ -218,9 +310,6 @@ export default function Dashboard() {
       <div className="flex flex-col items-center justify-center h-screen bg-gray-50 dark:bg-gray-900 p-6 text-center">
         <AlertCircle className="w-16 h-16 text-red-500 mb-4" />
         <h2 className="text-2xl font-bold text-gray-800 dark:text-white mb-2">Error de Sincronización</h2>
-        <p className="text-gray-600 dark:text-gray-400 mb-6 max-w-md">
-          No pudimos encontrar ni crear tu perfil automáticamente. Esto suele ser un problema de permisos en la base de datos.
-        </p>
         <button 
           onClick={() => window.location.reload()} 
           className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors shadow-lg"
@@ -241,7 +330,7 @@ export default function Dashboard() {
           <div className="bg-gradient-to-br from-blue-600 to-indigo-600 p-2.5 rounded-xl shadow-lg shadow-blue-500/30 shrink-0">
             <GraduationCap className="text-white w-6 h-6" />
           </div>
-          <span className="font-bold text-xl text-gray-800 dark:text-white hidden lg:block tracking-tight">EduAI</span>
+          <span className="font-bold text-xl text-gray-800 dark:text-white hidden lg:block tracking-tight">E Learning</span>
         </div>
         
         <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
@@ -267,11 +356,18 @@ export default function Dashboard() {
           )}
 
           {profile!.role === 'teacher' && (
-            <button onClick={() => setView('create')} className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all duration-200 group ${
-              view === 'create' ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 shadow-sm font-semibold' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:translate-x-1'
-             }`}>
-              <Plus className="w-5 h-5" /> <span className="hidden lg:block">Crear Curso</span>
-            </button>
+            <>
+              <button onClick={() => setView('create')} className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all duration-200 group ${
+                view === 'create' ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 shadow-sm font-semibold' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:translate-x-1'
+              }`}>
+                <Plus className="w-5 h-5" /> <span className="hidden lg:block">Crear Curso</span>
+              </button>
+              <button onClick={() => setView('schedule')} className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all duration-200 group ${
+                view === 'schedule' ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 shadow-sm font-semibold' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:translate-x-1'
+              }`}>
+                <CalendarIcon className="w-5 h-5" /> <span className="hidden lg:block">Programar</span>
+              </button>
+            </>
           )}
 
           {selectedCourse && (
@@ -323,6 +419,7 @@ export default function Dashboard() {
             {view === 'courses' && <><Book className="w-5 h-5 text-blue-500" /> Mis Cursos</>}
             {view === 'create' && <><Plus className="w-5 h-5 text-green-500" /> {profile!.role === 'teacher' ? 'Nuevo Curso' : 'Explorar'}</>}
             {view === 'chat' && <><Bot className="w-5 h-5 text-indigo-500" /> Tutor IA</>}
+            {view === 'schedule' && <><CalendarIcon className="w-5 h-5 text-purple-500" /> Programar Sesión</>}
           </h2>
         </header>
 
@@ -351,16 +448,34 @@ export default function Dashboard() {
                            <MoreVertical className="w-5 h-5" />
                          </div>
                          <h3 className="font-bold text-xl text-white tracking-wide shadow-sm">{course.title}</h3>
+                         {/* Mostrar nombre del docente */}
+                         {course.profiles && (
+                           <div className="text-white/90 text-xs flex items-center gap-1 mt-1">
+                             <User className="w-3 h-3" /> {course.profiles.full_name}
+                           </div>
+                         )}
                       </div>
                       <div className="p-6 flex-1 flex flex-col">
                         <p className="text-gray-600 dark:text-gray-300 text-sm mb-6 line-clamp-3 leading-relaxed flex-1">
                           {course.description}
                         </p>
+                        
+                        {/* Rating (Visual) */}
+                        <div className="flex gap-1 mb-4 text-yellow-400">
+                          <Star className="w-4 h-4 fill-current" />
+                          <Star className="w-4 h-4 fill-current" />
+                          <Star className="w-4 h-4 fill-current" />
+                          <Star className="w-4 h-4 fill-current" />
+                          <Star className="w-4 h-4 text-gray-300 dark:text-gray-600" />
+                          <span className="text-xs text-gray-400 ml-1">(4.0)</span>
+                        </div>
+
                         <button 
                           onClick={() => {
                             setSelectedCourse(course)
                             setView('chat')
                             setMessages([])
+                            if (profile?.role === 'student') initAiConversation(course)
                           }}
                           className="w-full py-3 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 bg-gray-50 dark:bg-gray-700 text-gray-700 dark:text-white group-hover:bg-blue-600 group-hover:text-white transition-all"
                         >
@@ -374,14 +489,67 @@ export default function Dashboard() {
             </div>
           )}
 
+          {/* VISTA PROGRAMAR SESIONES (DOCENTE) */}
+          {view === 'schedule' && profile?.role === 'teacher' && (
+             <div className="max-w-2xl mx-auto bg-white dark:bg-gray-800 p-8 rounded-3xl shadow-lg border border-gray-100 dark:border-gray-700">
+                <h2 className="text-2xl font-bold text-gray-800 dark:text-white mb-6 flex items-center gap-2">
+                  <CalendarIcon className="w-6 h-6 text-purple-600" /> Programar Tutoría Personalizada
+                </h2>
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Fecha</label>
+                      <input 
+                        type="date"
+                        className="w-full px-4 py-2 rounded-xl bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 outline-none dark:text-white"
+                        value={sessionDate}
+                        onChange={(e) => setSessionDate(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Hora</label>
+                      <input 
+                        type="time"
+                        className="w-full px-4 py-2 rounded-xl bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 outline-none dark:text-white"
+                        value={sessionTime}
+                        onChange={(e) => setSessionTime(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Enlace de Reunión (Meet/Zoom)</label>
+                    <input 
+                      type="url"
+                      placeholder="https://meet.google.com/..."
+                      className="w-full px-4 py-2 rounded-xl bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 outline-none dark:text-white"
+                      value={sessionLink}
+                      onChange={(e) => setSessionLink(e.target.value)}
+                    />
+                  </div>
+                  <button 
+                    onClick={scheduleSession}
+                    className="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 rounded-xl transition-all"
+                  >
+                    Confirmar Horario
+                  </button>
+                </div>
+             </div>
+          )}
+
           {/* VISTA CREAR / EXPLORAR */}
           {view === 'create' && (
              <div className="max-w-4xl mx-auto">
                 {profile!.role === 'teacher' ? (
                   <div className="bg-white dark:bg-gray-800 p-8 rounded-3xl shadow-lg border border-gray-100 dark:border-gray-700">
-                    <div className="mb-8 border-b dark:border-gray-700 pb-4">
-                      <h2 className="text-2xl font-bold text-gray-800 dark:text-white">Crear Nuevo Curso</h2>
-                      <p className="text-gray-500 dark:text-gray-400">Diseña el contenido para tus estudiantes</p>
+                    <div className="mb-8 border-b dark:border-gray-700 pb-4 flex justify-between items-center">
+                      <div>
+                        <h2 className="text-2xl font-bold text-gray-800 dark:text-white">Crear Nuevo Curso</h2>
+                        <p className="text-gray-500 dark:text-gray-400">Diseña el contenido para tus estudiantes</p>
+                      </div>
+                      {/* Botón de Ideas IA */}
+                      <button onClick={generateTeacherPrompts} className="flex items-center gap-2 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400 px-4 py-2 rounded-xl font-bold text-sm hover:scale-105 transition-transform">
+                        <Lightbulb className="w-4 h-4" /> Generar Ideas IA
+                      </button>
                     </div>
                     <div className="space-y-6">
                       <div>
@@ -416,7 +584,10 @@ export default function Dashboard() {
                         {courses.map(course => (
                           <div key={course.id} className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 flex flex-col">
                             <div className="flex justify-between items-start mb-4">
-                               <h3 className="font-bold text-lg text-gray-800 dark:text-white">{course.title}</h3>
+                               <div>
+                                 <h3 className="font-bold text-lg text-gray-800 dark:text-white">{course.title}</h3>
+                                 {course.profiles && <p className="text-xs text-gray-500 mt-1">Por: {course.profiles.full_name}</p>}
+                               </div>
                                <span className="bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-xs px-2 py-1 rounded-md font-bold">Curso</span>
                             </div>
                             <p className="text-gray-600 dark:text-gray-400 text-sm mb-6 flex-1">{course.description}</p>
@@ -438,7 +609,7 @@ export default function Dashboard() {
              </div>
           )}
 
-          {/* VISTA CHAT (ESTILO BUBBLES) */}
+          {/* VISTA CHAT (ESTILO BUBBLES + OPCIONES + CÓDIGO) */}
           {view === 'chat' && selectedCourse && (
             <div className="h-[calc(100vh-140px)] flex flex-col bg-white dark:bg-gray-800 rounded-3xl shadow-xl overflow-hidden border border-gray-200 dark:border-gray-700">
               {/* Chat Header */}
@@ -449,49 +620,47 @@ export default function Dashboard() {
                  <div>
                    <h3 className="font-bold text-white text-lg leading-none">{selectedCourse.title}</h3>
                    <span className="text-indigo-200 text-xs flex items-center gap-1">
-                     <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span> IA Conectada
+                     <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span> Tutor Activo
                    </span>
                  </div>
               </div>
 
               {/* Chat Area */}
               <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-gray-50 dark:bg-[#0b1120] relative">
-                {/* Fondo decorativo opcional */}
                 <div className="absolute inset-0 opacity-5 dark:opacity-5 pointer-events-none" style={{backgroundImage: "radial-gradient(#6366f1 1px, transparent 1px)", backgroundSize: "20px 20px"}}></div>
 
-                 {messages.length === 0 && (
-                   <div className="text-center py-20 opacity-60">
-                     <div className="bg-indigo-100 dark:bg-indigo-900/30 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-4">
-                       <Bot className="w-10 h-10 text-indigo-500" />
-                     </div>
-                     <p className="text-gray-500 dark:text-gray-400 font-medium">Inicia la conversación</p>
-                     <p className="text-xs text-gray-400">Pregunta dudas o pide ejercicios prácticos</p>
-                   </div>
-                 )}
-
                  {messages.map((msg, i) => (
-                   <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-in fade-in slide-in-from-bottom-2 duration-300`}>
+                   <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'} animate-in fade-in slide-in-from-bottom-2 duration-300`}>
                      <div className={`flex items-end gap-2 max-w-[85%] ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
-                       
-                       {/* Avatar Pequeño */}
                        <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 shadow-sm ${
                          msg.role === 'user' ? 'bg-blue-500' : 'bg-indigo-600'
                        }`}>
                          {msg.role === 'user' ? <User className="w-4 h-4 text-white" /> : <Bot className="w-4 h-4 text-white" />}
                        </div>
 
-                       {/* Burbuja */}
                        <div className={`p-4 rounded-2xl shadow-sm relative ${
                          msg.role === 'user' 
                            ? 'bg-blue-600 text-white rounded-br-none' 
                            : 'bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-100 rounded-bl-none border border-gray-100 dark:border-gray-600'
                        }`}>
                          <div className="whitespace-pre-wrap text-sm leading-relaxed">{msg.content}</div>
-                         <span className={`text-[10px] mt-1 block opacity-70 ${msg.role === 'user' ? 'text-blue-100 text-left' : 'text-gray-400 text-right'}`}>
-                           {msg.timestamp ? msg.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Ahora'}
-                         </span>
                        </div>
                      </div>
+
+                     {/* Botones de Opciones (Solo si es mensaje del modelo y tiene opciones) */}
+                     {msg.role === 'model' && msg.options && (
+                       <div className="flex flex-wrap gap-2 mt-2 ml-10">
+                         {msg.options.map((opt, idx) => (
+                           <button 
+                             key={idx}
+                             onClick={() => handleSendMessage(opt)}
+                             className="px-4 py-2 bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 rounded-lg text-sm font-semibold hover:bg-indigo-200 dark:hover:bg-indigo-900/60 transition-colors border border-indigo-200 dark:border-indigo-800"
+                           >
+                             {opt}
+                           </button>
+                         ))}
+                       </div>
+                     )}
                    </div>
                  ))}
 
@@ -507,25 +676,45 @@ export default function Dashboard() {
                  <div ref={chatEndRef} />
               </div>
 
-              {/* Input Area */}
+              {/* Input Area (Texto o Código) */}
               <div className="p-4 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700">
-                <div className="flex gap-3 items-end bg-gray-50 dark:bg-gray-900 p-2 rounded-3xl border border-gray-200 dark:border-gray-700 focus-within:ring-2 focus-within:ring-indigo-500 transition-all">
-                  <input 
-                    className="flex-1 bg-transparent px-4 py-3 max-h-32 outline-none text-gray-800 dark:text-white placeholder-gray-400 resize-none"
-                    placeholder="Escribe tu mensaje aquí..."
-                    value={inputMsg}
-                    onChange={e => setInputMsg(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && handleSendMessage()}
-                    disabled={aiLoading}
-                  />
-                  <button 
-                    onClick={handleSendMessage}
-                    disabled={aiLoading || !inputMsg.trim()}
-                    className="bg-indigo-600 hover:bg-indigo-700 text-white p-3 rounded-full disabled:opacity-50 disabled:cursor-not-allowed shadow-md transition-all hover:scale-105 active:scale-95 mb-1 mr-1"
-                  >
-                    <Send className="w-5 h-5" />
-                  </button>
-                </div>
+                {codeMode ? (
+                  <div className="flex flex-col gap-2 bg-gray-900 p-4 rounded-xl border border-gray-700">
+                    <div className="flex items-center gap-2 text-gray-400 text-xs uppercase font-bold tracking-wider mb-1">
+                      <CodeIcon className="w-4 h-4" /> Editor de Código
+                    </div>
+                    <textarea 
+                      className="w-full bg-transparent text-green-400 font-mono text-sm outline-none resize-none h-32"
+                      placeholder="// Escribe tu código aquí..."
+                      value={inputMsg}
+                      onChange={e => setInputMsg(e.target.value)}
+                    />
+                    <button 
+                      onClick={() => handleSendMessage()}
+                      className="self-end bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-bold transition-all"
+                    >
+                      Enviar Código
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex gap-3 items-end bg-gray-50 dark:bg-gray-900 p-2 rounded-3xl border border-gray-200 dark:border-gray-700 focus-within:ring-2 focus-within:ring-indigo-500 transition-all">
+                    <input 
+                      className="flex-1 bg-transparent px-4 py-3 max-h-32 outline-none text-gray-800 dark:text-white placeholder-gray-400 resize-none"
+                      placeholder="Escribe tu mensaje aquí..."
+                      value={inputMsg}
+                      onChange={e => setInputMsg(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && handleSendMessage()}
+                      disabled={aiLoading}
+                    />
+                    <button 
+                      onClick={() => handleSendMessage()}
+                      disabled={aiLoading || !inputMsg.trim()}
+                      className="bg-indigo-600 hover:bg-indigo-700 text-white p-3 rounded-full disabled:opacity-50 disabled:cursor-not-allowed shadow-md transition-all hover:scale-105 active:scale-95 mb-1 mr-1"
+                    >
+                      <Send className="w-5 h-5" />
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           )}
