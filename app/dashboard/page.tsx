@@ -300,16 +300,17 @@ export default function Dashboard() {
             setEnrolledStudents([]); 
         } else {
             // Mapeamos la respuesta para extraer el perfil anidado
-            // @ts-ignore: Supabase types inference can be tricky with nested joins
-            const students = data.map(item => {
-                if (item.profiles) return item.profiles;
+            const students: Profile[] = data.map(item => {
+                if (item.profiles && typeof item.profiles === 'object' && !Array.isArray(item.profiles)) {
+                    return item.profiles as Profile;
+                }
                 // Fallback si hay enrollment pero el perfil fue borrado (raro)
                 return {
                     id: item.student_id,
                     full_name: 'Perfil no encontrado',
                     email: 'Desconocido',
-                    role: 'student'
-                }
+                    role: 'student' as const
+                };
             });
             setEnrolledStudents(students);
         }
