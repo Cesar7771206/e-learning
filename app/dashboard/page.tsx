@@ -10,12 +10,11 @@ import {
   Video, ExternalLink, Trash2, Edit, Users, 
   ListChecks, ArrowLeft, Terminal, X, GripVertical, 
   Check, Play, Code as CodeIcon, Calculator, Feather,
-  LogOut as LeaveIcon, AlertCircle
+  LogOut as LeaveIcon, AlertCircle, Save, Ban
 } from 'lucide-react'
 import { useTheme } from 'next-themes'
 
 // --- TIPOS ---
-// Agregamos explícitamente 'email' al tipo Profile
 type Profile = { id: string, role: 'student' | 'teacher', full_name: string, avatar_url?: string, email?: string }
 type CourseCategory = 'math' | 'programming' | 'letters' | 'other'
 
@@ -49,7 +48,6 @@ type Message = {
 
 // --- UTILIDADES ---
 
-// Parsea el texto para extraer opciones {{A|B}} y limpiar el contenido
 const parseMessageContent = (rawText: string) => {
   const optionRegex = /\{\{(.+?)\}\}/;
   const match = rawText.match(optionRegex);
@@ -57,17 +55,14 @@ const parseMessageContent = (rawText: string) => {
   let content = rawText;
   let isCodeRequest = false;
 
-  // Buscar flags especiales primero
   if (rawText.includes('{{CODE_REQUEST}}')) {
       isCodeRequest = true;
       content = rawText.replace('{{CODE_REQUEST}}', '').trim();
   } else if (match) {
-      // Si no es code request, asumimos que son opciones
       options = match[1].split('|').map(o => o.trim());
       content = rawText.replace(match[0], '').trim();
   }
 
-  // Doble check por si vienen ambos (raro pero posible)
   if (content.includes('{{CODE_REQUEST}}')) {
       isCodeRequest = true;
       content = content.replace('{{CODE_REQUEST}}', '').trim();
@@ -76,25 +71,15 @@ const parseMessageContent = (rawText: string) => {
   return { content, options: options.length > 0 ? options : undefined, isCodeRequest };
 }
 
-// Resaltado de sintaxis MEJORADO (Soporte Multi-Lenguaje)
 const highlightCode = (code: string) => {
   if (!code) return '';
   let highlighted = code
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-  // Keywords (JS, TS, Python, Java, C++)
   const keywords = /\b(function|const|let|var|if|else|return|import|from|class|export|async|await|def|for|while|try|catch|public|private|protected|static|void|int|float|double|bool|boolean|string|String|new|this|extends|implements|interface|type|package|namespace|using|include|struct|template|typename|override|virtual|final|None|True|False|null|undefined)\b/g;
-  
-  // Built-ins & Methods
   const builtins = /\b(console|log|map|filter|reduce|push|print|len|range|std|cout|cin|printf|scanf|System|out|println)\b/g;
-  
-  // Strings
   const strings = /('.*?'|".*?"|`.*?`)/g;
-  
-  // Numbers
   const numbers = /\b(\d+)\b/g;
-  
-  // Comments
   const comments = /(\/\/.*$|#.*$|\/\*[\s\S]*?\*\/)/gm;
 
   highlighted = highlighted
@@ -107,7 +92,6 @@ const highlightCode = (code: string) => {
   return highlighted;
 }
 
-// --- COMPONENTE EDITOR DE CÓDIGO CON RESALTADO (Overlay Method) ---
 const CodeEditor = ({ value, onChange, onRun, readOnly }: { value: string, onChange: (v: string) => void, onRun?: () => void, readOnly?: boolean }) => {
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const preRef = useRef<HTMLPreElement>(null);
@@ -132,7 +116,6 @@ const CodeEditor = ({ value, onChange, onRun, readOnly }: { value: string, onCha
 
     return (
         <div className="relative w-full h-64 rounded-xl overflow-hidden border border-gray-700 bg-[#1e1e1e] shadow-2xl ring-4 ring-gray-900/5 group">
-            {/* Header del Editor */}
             <div className="flex items-center justify-between px-4 py-2 bg-[#252526] border-b border-[#333] z-20 relative">
                 <span className="text-xs font-bold text-gray-400 flex items-center gap-2">
                     <CodeIcon className="w-3 h-3 text-blue-400"/> EDITOR INTERACTIVO
@@ -143,17 +126,13 @@ const CodeEditor = ({ value, onChange, onRun, readOnly }: { value: string, onCha
                     <div className="w-2.5 h-2.5 rounded-full bg-green-500"/>
                 </div>
             </div>
-
             <div className="relative w-full h-[calc(100%-40px)]">
-                 {/* Capa de Resaltado (Detrás) */}
                 <pre
                     ref={preRef}
                     aria-hidden="true"
                     className="absolute inset-0 p-4 m-0 font-mono text-sm leading-relaxed pointer-events-none whitespace-pre-wrap break-words overflow-hidden text-[#d4d4d4]"
                     dangerouslySetInnerHTML={{ __html: highlightCode(value || ' ') + '<br/>' }} 
                 />
-                
-                {/* Capa de Input (Transparente, Delante) */}
                 <textarea
                     ref={textareaRef}
                     value={value}
@@ -165,8 +144,6 @@ const CodeEditor = ({ value, onChange, onRun, readOnly }: { value: string, onCha
                     className={`absolute inset-0 w-full h-full p-4 m-0 font-mono text-sm leading-relaxed bg-transparent text-transparent caret-white resize-none outline-none whitespace-pre-wrap break-words overflow-auto z-10 ${readOnly ? 'opacity-0 cursor-default' : ''}`}
                     placeholder="// Escribe tu código aquí..."
                 />
-
-                {/* Botón Ejecutar */}
                 {!readOnly && onRun && (
                     <button onClick={onRun} 
                         className="absolute bottom-4 right-4 z-30 bg-green-600 hover:bg-green-500 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-lg flex items-center gap-2 transition-all transform hover:scale-105 hover:shadow-green-500/20">
@@ -177,7 +154,6 @@ const CodeEditor = ({ value, onChange, onRun, readOnly }: { value: string, onCha
         </div>
     );
 };
-
 
 export default function Dashboard() {
   const router = useRouter()
@@ -215,27 +191,32 @@ export default function Dashboard() {
   
   const chatEndRef = useRef<HTMLDivElement>(null)
 
+  // --- HELPER: RESET FORM ---
+  const resetForm = () => {
+    setNewCourseTitle('');
+    setNewCourseDesc('');
+    setNewCourseCategory('other');
+    setEditingCourseId(null);
+  }
+
   // --- CARGA INICIAL ---
   const fetchProfile = useCallback(async (currentUser: any) => {
     try {
       const { data, error } = await supabase.from('profiles').select('*').eq('id', currentUser.id).maybeSingle()
       
-      // LÓGICA ROBUSTA: Siempre intentar actualizar el email en el perfil para que sea visible
       const updates = {
           id: currentUser.id,
-          full_name: currentUser.email, // Usamos el email como nombre por defecto para visualización rápida
-          email: currentUser.email,     // Guardamos también en campo email si existe en BD
-          role: data?.role || 'student', // Mantener rol si existe, sino student
+          full_name: currentUser.email, 
+          email: currentUser.email,     
+          role: data?.role || 'student', 
           updated_at: new Date().toISOString()
       };
 
       if (!data || error) {
-        // Si no existe, creamos
         await supabase.from('profiles').upsert(updates)
         window.location.reload()
         return
       } else {
-        // Si existe, actualizamos para asegurar que el email esté fresco
         await supabase.from('profiles').update(updates).eq('id', currentUser.id)
       }
 
@@ -305,21 +286,18 @@ export default function Dashboard() {
         }
 
         const ids = enrollments.map(e => e.student_id)
-        // Intentar traer todo, incluyendo email si la columna existe en public.profiles
         const { data: profiles } = await supabase.from('profiles').select('*').in('id', ids)
         
         const validProfiles = profiles || []
         const foundIds = new Set(validProfiles.map(p => p.id))
         
-        // FALLBACK MEJORADO: Si no encontramos el perfil, creamos un placeholder sin los "..." 
-        // para que la interfaz muestre el ID u otro dato disponible en lugar de puntos vacíos.
         const placeholders: Profile[] = ids
             .filter(id => !foundIds.has(id))
             .map(id => ({ 
                 id, 
                 role: 'student', 
-                full_name: 'Usuario sin sincronizar', // Texto explícito en lugar de cargar indefinido
-                // NO ponemos email: '...' para evitar que la UI priorice mostrar puntos suspensivos
+                full_name: 'Estudiante (ID)', 
+                email: id // Usamos ID como fallback visual
             }))
         
         setEnrolledStudents([...validProfiles, ...placeholders])
@@ -344,7 +322,6 @@ export default function Dashboard() {
         options: m.options ? (typeof m.options === 'string' ? JSON.parse(m.options) : m.options) : undefined, 
         isCodeRequest: m.is_code_request
       })))
-      // Solo mostramos el editor si el ÚLTIMO mensaje lo pidió
       if (data[data.length - 1].is_code_request) setCodeEditorVisible(true)
     } else {
       setMessages([])
@@ -380,15 +357,12 @@ export default function Dashboard() {
 
   const processAiResponse = async (textRaw: string, courseId: number) => {
     const { content, options, isCodeRequest } = parseMessageContent(textRaw)
-    
     const aiMsg: Message = { role: 'model', content, timestamp: new Date(), options, isCodeRequest }
-    
     setMessages(prev => [...prev, aiMsg])
     await supabase.from('chat_messages').insert({ 
       user_id: user.id, course_id: courseId, role: 'model', content, 
       options: options ? JSON.stringify(options) : null, is_code_request: isCodeRequest 
     })
-
     if (isCodeRequest) setCodeEditorVisible(true)
   }
 
@@ -401,36 +375,21 @@ export default function Dashboard() {
       }
     } catch { syllabusList = course.syllabus || "" }
 
-    // PROMPTS REFORZADOS
     const categoryPrompts = {
-      math: "Eres Profesor de Matemáticas. USA FORMATO LaTeX $$...$$ para formulas complejas. Muestra los pasos claramente.",
-      programming: `Eres Senior Developer Mentor.
-      REGLA DE CÓDIGO CRUCIAL:
-      1. Si la pregunta es TEÓRICA o de CONCEPTO, usa botones de opciones {{Opción A|Opción B}}.
-      2. SI Y SOLO SI pides al alumno que ESCRIBA CÓDIGO para resolver un problema, TERMINA tu respuesta con la etiqueta {{CODE_REQUEST}}.
-      3. No uses {{CODE_REQUEST}} si solo estás explicando o dando ejemplos. Solo cuando esperes input de código del alumno.`,
-      letters: "Eres Profesor de Literatura. Usa citas elegantes precedidas por el signo mayor que (>).",
-      other: "Eres un tutor experto y adaptable."
+      math: "Eres Profesor de Matemáticas. USA FORMATO LaTeX $$...$$ para formulas complejas.",
+      programming: `Eres Senior Developer Mentor. 1. Si es pregunta teórica, usa {{Opción A|Opción B}}. 2. Si pides código, termina con {{CODE_REQUEST}}.`,
+      letters: "Eres Profesor de Literatura. Usa citas con >.",
+      other: "Eres un tutor experto."
     }
-
     const specificRole = categoryPrompts[course.category] || categoryPrompts.other
-
-    return `CONTEXTO: Curso "${course.title}". TEMARIO: [${syllabusList}]. ROL: ${specificRole}. 
-    REGLAS GLOBALES DE INTERACCIÓN: 
-    1. Para preguntas de selección múltiple, SIEMPRE usa el formato {{Opción A|Opción B}} al final para que aparezcan los botones. 
-    2. Las fórmulas matemáticas SIEMPRE entre doble signo dolar ($$). 
-    3. Citas literarias o de texto importante usar formato markdown quote (> Cita).
-    4. Sé didáctico y motivador.`
+    return `CONTEXTO: Curso "${course.title}". TEMARIO: [${syllabusList}]. ROL: ${specificRole}. REGLAS: Opción múltiple con {{A|B}}, Matemáticas $$, Código {{CODE_REQUEST}}.`
   }
 
-  // --- RENDERIZADO RICO (CORE DE LA UI) ---
   const renderRichMessage = (text: string, category: CourseCategory) => {
     if (!text) return null;
-    
     const parts = text.split(/(```[\s\S]*?```)/g);
     
     return parts.map((part, index) => {
-      // A. Bloque de Código (Display de la IA)
       if (part.startsWith('```')) {
         const code = part.slice(3, -3).replace(/^.*\n/, ''); 
         return (
@@ -443,31 +402,21 @@ export default function Dashboard() {
           </div>
         );
       }
-
       let content = part;
-
       if (content.includes('> ') || content.match(/".{20,}"/)) {
          content = content.replace(/^> (.*$)/gm, '<div class="my-4 p-4 bg-[#fdf6e3] dark:bg-[#2c2b25] border-l-4 border-[#d33682] text-[#657b83] dark:text-[#a8a19f] font-serif italic text-lg leading-relaxed shadow-sm">"$1"</div>');
          content = content.replace(/"([^"]{20,})"/g, '<div class="my-4 p-4 bg-[#fdf6e3] dark:bg-[#2c2b25] border-l-4 border-[#d33682] text-[#657b83] dark:text-[#a8a19f] font-serif italic text-lg leading-relaxed shadow-sm">"$1"</div>');
       }
-
       const mathBlocks = content.split(/(\$\$[\s\S]*?\$\$)/g);
       if (mathBlocks.length > 1) {
         return mathBlocks.map((block, i) => {
           if (block.startsWith('$$') && block.endsWith('$$')) {
             const formula = block.slice(2, -2);
-            return (
-              <div key={`${index}-math-${i}`} className="my-4 py-4 px-6 bg-blue-50 dark:bg-[#1e293b] border-l-4 border-blue-500 rounded-r-lg shadow-sm text-center overflow-x-auto">
-                <span className="font-serif text-xl md:text-2xl text-slate-800 dark:text-slate-200 tracking-wide font-medium">
-                  {formula}
-                </span>
-              </div>
-            );
+            return <div key={`${index}-math-${i}`} className="my-4 py-4 px-6 bg-blue-50 dark:bg-[#1e293b] border-l-4 border-blue-500 rounded-r-lg shadow-sm text-center overflow-x-auto"><span className="font-serif text-xl md:text-2xl text-slate-800 dark:text-slate-200 tracking-wide font-medium">{formula}</span></div>;
           }
           return <span key={`${index}-txt-${i}`} dangerouslySetInnerHTML={{ __html: formatInlineText(block, category) }} />;
         });
       }
-
       return <span key={index} dangerouslySetInnerHTML={{ __html: formatInlineText(content, category) }} />;
     });
   };
@@ -477,25 +426,57 @@ export default function Dashboard() {
       .replace(/\*\*(.*?)\*\*/g, '<strong class="font-bold text-indigo-600 dark:text-indigo-400">$1</strong>')
       .replace(/^\* (.*$)/gm, '<li class="ml-4 list-disc marker:text-indigo-500 mb-1">$1</li>')
       .replace(/\n/g, '<br/>');
-    
     fmt = fmt.replace(/\$([^$]+?)\$/g, '<span class="font-serif italic bg-gray-100 dark:bg-gray-800 px-1 rounded text-pink-600 dark:text-pink-400 font-medium">$1</span>');
     return fmt;
   }
 
-  // --- ACCIONES CRUD ---
+  // --- ACCIONES CRUD MEJORADAS ---
+  
   const createOrUpdateCourse = async () => {
-    const payload = { title: newCourseTitle, description: newCourseDesc, category: newCourseCategory }
-    if (editingCourseId) await supabase.from('courses').update(payload).eq('id', editingCourseId)
-    else await supabase.from('courses').insert({ ...payload, created_by: user.id, is_published: true })
-    setNewCourseTitle(''); setNewCourseDesc(''); setEditingCourseId(null); setView('courses'); fetchCourses('teacher', user.id)
+    if (!user) return;
+    const payload = { title: newCourseTitle, description: newCourseDesc, category: newCourseCategory };
+    
+    try {
+        if (editingCourseId) {
+            const { error } = await supabase.from('courses').update(payload).eq('id', editingCourseId);
+            if (error) throw error;
+        } else {
+            const { error } = await supabase.from('courses').insert({ ...payload, created_by: user.id, is_published: true });
+            if (error) throw error;
+        }
+        
+        resetForm(); // Limpiar formulario tras éxito
+        setView('courses');
+        fetchCourses('teacher', user.id);
+    } catch (e: any) {
+        alert("Error al guardar: " + e.message);
+    }
   }
 
+  // CORRECCIÓN: Borrado en Cascada Manual
   const handleDeleteCourse = async (courseId: number, e: React.MouseEvent) => {
     e.stopPropagation();
-    if(!confirm("¿Estás seguro de eliminar este curso? Se perderán los datos asociados.")) return;
-    const { error } = await supabase.from('courses').delete().eq('id', courseId);
-    if (error) alert("Error al eliminar: " + error.message);
-    else fetchCourses('teacher', user.id);
+    if(!confirm("ADVERTENCIA: Esto borrará TODOS los datos del curso (estudiantes, chats, sesiones). ¿Estás seguro?")) return;
+    
+    try {
+        // 1. Borrar inscripciones
+        await supabase.from('enrollments').delete().eq('course_id', courseId);
+        // 2. Borrar sesiones
+        await supabase.from('sessions').delete().eq('course_id', courseId);
+        // 3. Borrar chats
+        await supabase.from('chat_messages').delete().eq('course_id', courseId);
+        // 4. Finalmente borrar el curso
+        const { error } = await supabase.from('courses').delete().eq('id', courseId);
+        
+        if (error) throw error;
+        
+        // Actualizar UI
+        setMyCourses(prev => prev.filter(c => c.id !== courseId));
+        setCourses(prev => prev.filter(c => c.id !== courseId));
+        
+    } catch (e: any) {
+        alert("Error crítico al eliminar: " + e.message);
+    }
   }
 
   const handleLeaveCourse = async () => {
@@ -506,12 +487,15 @@ export default function Dashboard() {
     else { setView('courses'); fetchCourses('student', user.id); }
   }
 
+  // CORRECCIÓN: Edición limpia
   const handleEditCourse = (course: Course, e: React.MouseEvent) => {
     e.stopPropagation();
+    // Establecer valores para edición
     setNewCourseTitle(course.title);
     setNewCourseDesc(course.description);
     setNewCourseCategory(course.category);
     setEditingCourseId(course.id);
+    // Cambiar vista
     setView('create');
   }
   
@@ -546,11 +530,11 @@ export default function Dashboard() {
         </div>
         
         <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
-          <button onClick={() => setView('courses')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium ${view === 'courses' ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-500/20' : 'text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-800'}`}>
+          <button onClick={() => { setView('courses'); resetForm(); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium ${view === 'courses' ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-500/20' : 'text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-800'}`}>
             <Book className="w-5 h-5" /> <span className="hidden lg:block">Mis Cursos</span>
           </button>
           
-          <button onClick={() => { setView('create'); fetchCourses(profile?.role, user.id); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium ${view === 'create' ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-500/20' : 'text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-800'}`}>
+          <button onClick={() => { resetForm(); setView('create'); fetchCourses(profile?.role, user.id); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium ${view === 'create' ? 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-500/20' : 'text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-800'}`}>
             {profile?.role === 'teacher' ? <Plus className="w-5 h-5" /> : <Search className="w-5 h-5" />} 
             <span className="hidden lg:block">{profile?.role === 'teacher' ? 'Crear Curso' : 'Explorar'}</span>
           </button>
@@ -584,7 +568,7 @@ export default function Dashboard() {
               <div className="text-center py-20 bg-white dark:bg-gray-800 rounded-2xl border border-dashed dark:border-gray-700">
                 <Book className="w-16 h-16 text-gray-300 mx-auto mb-4"/>
                 <p className="text-gray-500">No estás inscrito en ningún curso.</p>
-                <button onClick={() => setView('create')} className="mt-4 text-indigo-600 font-bold hover:underline">Ir a Explorar Cursos</button>
+                <button onClick={() => { resetForm(); setView('create'); }} className="mt-4 text-indigo-600 font-bold hover:underline">Ir a Explorar Cursos</button>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -669,8 +653,7 @@ export default function Dashboard() {
                         <div className="max-h-96 overflow-y-auto space-y-2">
                            {enrolledStudents.map(st => (
                              <div key={st.id} className="flex items-center gap-3 p-3 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-xl transition-colors">
-                               <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 text-white flex items-center justify-center font-bold text-xs">{(st.email || st.full_name || '?')[0].toUpperCase()}</div>
-                               {/* CORRECCIÓN: Priorizar visualización del email, fallback a ID si no hay datos */}
+                               <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 text-white flex items-center justify-center font-bold text-xs">{(st.email || st.full_name || 'U')[0].toUpperCase()}</div>
                                <span className="text-sm font-medium">
                                    {st.email || st.full_name || `ID: ${st.id.slice(0, 8)}...`}
                                </span>
@@ -682,7 +665,7 @@ export default function Dashboard() {
                         {enrolledStudents.some(s => !s.email && !s.full_name) && (
                             <div className="mt-2 p-2 bg-blue-50 dark:bg-blue-900/20 rounded-lg flex items-start gap-2 text-xs text-blue-600 dark:text-blue-400">
                                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5"/>
-                                <p>Nota: Los correos serán visibles cuando el estudiante inicie sesión nuevamente.</p>
+                                <p>Nota: Los correos serán visibles cuando el estudiante inicie sesión.</p>
                             </div>
                         )}
                       </div>
@@ -829,7 +812,7 @@ export default function Dashboard() {
                     <h2 className="text-2xl font-bold dark:text-white">{profile?.role === 'teacher' ? (editingCourseId ? 'Editar Curso' : 'Crear Nuevo Curso') : 'Explorar Cursos Disponibles'}</h2>
                     <p className="text-gray-500 text-sm mt-1">{profile?.role === 'teacher' ? 'Comparte tu conocimiento con el mundo.' : 'Encuentra tu próxima aventura de aprendizaje.'}</p>
                   </div>
-                  <button onClick={() => setView('courses')} className="w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center hover:bg-gray-200"><X className="w-4 h-4"/></button>
+                  <button onClick={() => { setView('courses'); resetForm(); }} className="w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center hover:bg-gray-200"><X className="w-4 h-4"/></button>
                 </div>
 
                 {profile?.role === 'teacher' ? (
@@ -854,9 +837,17 @@ export default function Dashboard() {
                           <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Descripción</label>
                           <textarea value={newCourseDesc} onChange={e => setNewCourseDesc(e.target.value)} className="w-full px-4 py-3 rounded-xl border h-32 resize-none dark:bg-gray-900 dark:border-gray-700 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="¿De qué trata este curso?"/>
                         </div>
-                        <button onClick={createOrUpdateCourse} disabled={!newCourseTitle || !newCourseDesc} className="w-full py-4 bg-indigo-600 text-white rounded-xl font-bold text-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-xl shadow-indigo-500/20 transition-all transform hover:scale-[1.02]">
-                          {editingCourseId ? 'Guardar Cambios' : 'Publicar Curso'}
-                        </button>
+                        
+                        <div className="flex gap-4">
+                            {editingCourseId && (
+                                <button onClick={resetForm} className="flex-1 py-4 bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 rounded-xl font-bold text-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors flex items-center justify-center gap-2">
+                                    <Ban className="w-5 h-5"/> Cancelar
+                                </button>
+                            )}
+                            <button onClick={createOrUpdateCourse} disabled={!newCourseTitle || !newCourseDesc} className="flex-1 py-4 bg-indigo-600 text-white rounded-xl font-bold text-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-xl shadow-indigo-500/20 transition-all transform hover:scale-[1.02] flex items-center justify-center gap-2">
+                                {editingCourseId ? <><Save className="w-5 h-5"/> Guardar Cambios</> : 'Publicar Curso'}
+                            </button>
+                        </div>
                     </div>
 
                     {/* VISTA EXPLORE PARA PROFESORES (PARA QUE VEAN LOS CURSOS EXISTENTES) */}
