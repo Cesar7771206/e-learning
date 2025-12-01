@@ -56,29 +56,127 @@ const parseMessageContent = (rawText: string) => {
   let content = rawText;
   let isCodeRequest = false;
 
-  if (match) {
-    if (match[1].includes('CODE_REQUEST')) {
+  // Buscar flags especiales primero
+  if (rawText.includes('{{CODE_REQUEST}}')) {
       isCodeRequest = true;
-    } else {
+      content = rawText.replace('{{CODE_REQUEST}}', '').trim();
+  } else if (match) {
+      // Si no es code request, asumimos que son opciones
       options = match[1].split('|').map(o => o.trim());
-    }
-    content = rawText.replace(match[0], '').trim();
+      content = rawText.replace(match[0], '').trim();
+  }
+
+  // Doble check por si vienen ambos (raro pero posible)
+  if (content.includes('{{CODE_REQUEST}}')) {
+      isCodeRequest = true;
+      content = content.replace('{{CODE_REQUEST}}', '').trim();
   }
 
   return { content, options: options.length > 0 ? options : undefined, isCodeRequest };
 }
 
-// Resaltado de sintaxis simple
+// Resaltado de sintaxis MEJORADO (Soporte Multi-Lenguaje)
 const highlightCode = (code: string) => {
   if (!code) return '';
-  return code
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    .replace(/\b(function|const|let|var|if|else|return|import|from|class|export|async|await|def|for|while|try|catch|public|private)\b/g, '<span class="text-purple-400 font-bold">$1</span>')
-    .replace(/\b(console|log|map|filter|reduce|push|print|len|range|std|cout)\b/g, '<span class="text-blue-400">$1</span>')
-    .replace(/('.*?'|".*?"|`.*?`)/g, '<span class="text-green-400">$1</span>')
-    .replace(/\b(\d+)\b/g, '<span class="text-orange-400">$1</span>')
-    .replace(/(\/\/.*$|#.*$)/gm, '<span class="text-gray-500 italic">$1</span>');
+  let highlighted = code
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  // Keywords (JS, TS, Python, Java, C++)
+  const keywords = /\b(function|const|let|var|if|else|return|import|from|class|export|async|await|def|for|while|try|catch|public|private|protected|static|void|int|float|double|bool|boolean|string|String|new|this|extends|implements|interface|type|package|namespace|using|include|struct|template|typename|override|virtual|final|None|True|False|null|undefined)\b/g;
+  
+  // Built-ins & Methods
+  const builtins = /\b(console|log|map|filter|reduce|push|print|len|range|std|cout|cin|printf|scanf|System|out|println)\b/g;
+  
+  // Strings
+  const strings = /('.*?'|".*?"|`.*?`)/g;
+  
+  // Numbers
+  const numbers = /\b(\d+)\b/g;
+  
+  // Comments
+  const comments = /(\/\/.*$|#.*$|\/\*[\s\S]*?\*\/)/gm;
+
+  highlighted = highlighted
+    .replace(keywords, '<span class="text-purple-400 font-bold">$1</span>')
+    .replace(builtins, '<span class="text-blue-400">$1</span>')
+    .replace(strings, '<span class="text-green-400">$1</span>')
+    .replace(numbers, '<span class="text-orange-400">$1</span>')
+    .replace(comments, '<span class="text-gray-500 italic">$1</span>');
+
+  return highlighted;
 }
+
+// --- COMPONENTE EDITOR DE CÓDIGO CON RESALTADO (Overlay Method) ---
+const CodeEditor = ({ value, onChange, onRun, readOnly }: { value: string, onChange: (v: string) => void, onRun?: () => void, readOnly?: boolean }) => {
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const preRef = useRef<HTMLPreElement>(null);
+
+    const handleScroll = () => {
+        if (textareaRef.current && preRef.current) {
+            preRef.current.scrollTop = textareaRef.current.scrollTop;
+            preRef.current.scrollLeft = textareaRef.current.scrollLeft;
+        }
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+        if (e.key === 'Tab') {
+            e.preventDefault();
+            const target = e.currentTarget;
+            const start = target.selectionStart;
+            const end = target.selectionEnd;
+            target.setRangeText('  ', start, end, 'end');
+            onChange(target.value);
+        }
+    };
+
+    return (
+        <div className="relative w-full h-64 rounded-xl overflow-hidden border border-gray-700 bg-[#1e1e1e] shadow-2xl ring-4 ring-gray-900/5 group">
+            {/* Header del Editor */}
+            <div className="flex items-center justify-between px-4 py-2 bg-[#252526] border-b border-[#333] z-20 relative">
+                <span className="text-xs font-bold text-gray-400 flex items-center gap-2">
+                    <CodeIcon className="w-3 h-3 text-blue-400"/> EDITOR INTERACTIVO
+                </span>
+                <div className="flex gap-1.5">
+                    <div className="w-2.5 h-2.5 rounded-full bg-red-500"/>
+                    <div className="w-2.5 h-2.5 rounded-full bg-yellow-500"/>
+                    <div className="w-2.5 h-2.5 rounded-full bg-green-500"/>
+                </div>
+            </div>
+
+            <div className="relative w-full h-[calc(100%-40px)]">
+                 {/* Capa de Resaltado (Detrás) */}
+                <pre
+                    ref={preRef}
+                    aria-hidden="true"
+                    className="absolute inset-0 p-4 m-0 font-mono text-sm leading-relaxed pointer-events-none whitespace-pre-wrap break-words overflow-hidden text-[#d4d4d4]"
+                    dangerouslySetInnerHTML={{ __html: highlightCode(value || ' ') + '<br/>' }} 
+                />
+                
+                {/* Capa de Input (Transparente, Delante) */}
+                <textarea
+                    ref={textareaRef}
+                    value={value}
+                    onChange={(e) => onChange(e.target.value)}
+                    onScroll={handleScroll}
+                    onKeyDown={handleKeyDown}
+                    spellCheck={false}
+                    disabled={readOnly}
+                    className={`absolute inset-0 w-full h-full p-4 m-0 font-mono text-sm leading-relaxed bg-transparent text-transparent caret-white resize-none outline-none whitespace-pre-wrap break-words overflow-auto z-10 ${readOnly ? 'opacity-0 cursor-default' : ''}`}
+                    placeholder="// Escribe tu código aquí..."
+                />
+
+                {/* Botón Ejecutar */}
+                {!readOnly && onRun && (
+                    <button onClick={onRun} 
+                        className="absolute bottom-4 right-4 z-30 bg-green-600 hover:bg-green-500 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-lg flex items-center gap-2 transition-all transform hover:scale-105 hover:shadow-green-500/20">
+                        <Play className="w-3 h-3 fill-current"/> EJECUTAR Y ENVIAR
+                    </button>
+                )}
+            </div>
+        </div>
+    );
+};
+
 
 export default function Dashboard() {
   const router = useRouter()
@@ -92,11 +190,12 @@ export default function Dashboard() {
   
   // Vistas y Datos
   const [view, setView] = useState<'courses' | 'course_detail' | 'create'>('courses')
-  const [courses, setCourses] = useState<Course[]>([]) // Cursos disponibles (Explorar)
-  const [myCourses, setMyCourses] = useState<Course[]>([]) // Mis cursos inscritos
+  const [courses, setCourses] = useState<Course[]>([]) 
+  const [myCourses, setMyCourses] = useState<Course[]>([]) 
   const [selectedCourse, setSelectedCourse] = useState<Course | null>(null)
   const [courseSessions, setCourseSessions] = useState<Session[]>([])
   const [enrolledStudents, setEnrolledStudents] = useState<Profile[]>([]) 
+  const [loadingStudents, setLoadingStudents] = useState(false)
   
   // Formularios
   const [newCourseTitle, setNewCourseTitle] = useState('')
@@ -114,14 +213,12 @@ export default function Dashboard() {
   const [sessionData, setSessionData] = useState({ date: '', time: '', link: '' })
   
   const chatEndRef = useRef<HTMLDivElement>(null)
-  const editorRef = useRef<HTMLTextAreaElement>(null)
 
   // --- CARGA INICIAL ---
   const fetchProfile = useCallback(async (currentUser: any) => {
     try {
       const { data, error } = await supabase.from('profiles').select('*').eq('id', currentUser.id).maybeSingle()
       if (!data || error) {
-        // Autocuración: crear perfil si no existe
         await supabase.from('profiles').upsert({
           id: currentUser.id, full_name: currentUser.email?.split('@')[0] || 'Estudiante', role: 'student'
         })
@@ -144,62 +241,68 @@ export default function Dashboard() {
     init()
   }, [router, fetchProfile])
 
-  // Scroll automático al final del chat
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, codeEditorVisible])
+  
+  useEffect(() => {
+    if (view === 'course_detail' && selectedCourse && profile?.role === 'teacher') {
+        fetchEnrolledStudents(selectedCourse.id)
+    }
+  }, [view, selectedCourse, profile])
 
-  // --- GESTIÓN DE CURSOS (MEJORADA PARA ROBUSTEZ) ---
+  // --- GESTIÓN DE CURSOS ---
   const fetchCourses = async (role: string | undefined, userId: string) => {
     try {
-      // 1. Obtener TODOS los cursos (Explore) primero
       let allData: any[] = []
       const { data: dataWithProfiles, error: errorProfiles } = await supabase.from('courses').select('*, profiles(full_name)')
       
-      if (!errorProfiles && dataWithProfiles) {
-        allData = dataWithProfiles
-      } else {
+      if (!errorProfiles && dataWithProfiles) allData = dataWithProfiles
+      else {
         const { data: rawData } = await supabase.from('courses').select('*')
         allData = rawData || []
       }
 
       if (role === 'teacher') {
-        // Profesor: 
-        // A. Mis Cursos (los creados por mí)
         const my = allData.filter(c => c.created_by === userId)
         setMyCourses(my)
-        
-        // B. Explore (Todos los cursos, para que el profe vea qué hay en la DB)
         setCourses(allData)
       } else {
-        // Estudiante: 
-        // 1. Obtener inscripciones
         const { data: enrollData } = await supabase.from('enrollments').select('course_id').eq('student_id', userId)
         const enrolledIds = new Set(enrollData?.map((e: any) => e.course_id) || [])
-        
-        // A. Mis Cursos (los que estoy inscrito)
         const my = allData.filter(c => enrolledIds.has(c.id))
         setMyCourses(my)
-        
-        // B. Explore (los que NO estoy inscrito)
         const available = allData.filter(c => !enrolledIds.has(c.id))
         setCourses(available)
       }
     } catch (e) { console.error("Error fetching courses:", e) }
   }
 
-  // --- GESTIÓN DE ESTUDIANTES Y SESIONES ---
+  // --- GESTIÓN DE ESTUDIANTES ---
   const fetchEnrolledStudents = async (courseId: number) => {
+    setLoadingStudents(true)
     try {
         const { data: enrollments } = await supabase.from('enrollments').select('student_id').eq('course_id', courseId)
+        
         if (!enrollments || enrollments.length === 0) { 
             setEnrolledStudents([]); 
+            setLoadingStudents(false)
             return 
         }
+
         const ids = enrollments.map(e => e.student_id)
         const { data: profiles } = await supabase.from('profiles').select('*').in('id', ids)
-        setEnrolledStudents(profiles || [])
-    } catch (e) { console.error("Error fetching students:", e) }
+        
+        const validProfiles = profiles || []
+        const foundIds = new Set(validProfiles.map(p => p.id))
+        
+        const placeholders: Profile[] = ids
+            .filter(id => !foundIds.has(id))
+            .map(id => ({ id, role: 'student', full_name: 'Estudiante Registrado' }))
+        
+        setEnrolledStudents([...validProfiles, ...placeholders])
+    } catch (e) { console.error("Error fetching students:", e) 
+    } finally { setLoadingStudents(false) }
   }
 
   const fetchSessions = async (courseId: number) => {
@@ -219,6 +322,7 @@ export default function Dashboard() {
         options: m.options ? (typeof m.options === 'string' ? JSON.parse(m.options) : m.options) : undefined, 
         isCodeRequest: m.is_code_request
       })))
+      // Solo mostramos el editor si el ÚLTIMO mensaje lo pidió
       if (data[data.length - 1].is_code_request) setCodeEditorVisible(true)
     } else {
       setMessages([])
@@ -228,7 +332,7 @@ export default function Dashboard() {
 
   const initAiConversation = async (course: Course) => {
     const sysPrompt = getSystemPrompt(course)
-    const res = await chatWithGemini("Hola, soy el estudiante. Inicia la clase saludando y hazme una pregunta del primer tema.", sysPrompt, [])
+    const res = await chatWithGemini("Hola, soy el estudiante. Inicia la clase saludando y hazme una pregunta del primer tema. Si es una pregunta teórica, dame opciones.", sysPrompt, [])
     if (res.success) processAiResponse(res.message, course.id)
   }
 
@@ -242,12 +346,9 @@ export default function Dashboard() {
     setAiLoading(true)
     setCodeEditorVisible(false) 
 
-    // Guardar mensaje usuario
     await supabase.from('chat_messages').insert({ user_id: user.id, course_id: selectedCourse.id, role: 'user', content: txt })
 
     const sysPrompt = getSystemPrompt(selectedCourse)
-    
-    // Preparar historial para la API (quitando opciones y campos extra)
     const historyForAi = messages.map(m => ({ role: m.role, content: m.content }))
     
     const res = await chatWithGemini(txt, sysPrompt, historyForAi)
@@ -278,9 +379,14 @@ export default function Dashboard() {
       }
     } catch { syllabusList = course.syllabus || "" }
 
+    // PROMPTS REFORZADOS
     const categoryPrompts = {
       math: "Eres Profesor de Matemáticas. USA FORMATO LaTeX $$...$$ para formulas complejas. Muestra los pasos claramente.",
-      programming: "Eres Senior Developer Mentor. SI Y SOLO SI pides al alumno escribir código, termina tu respuesta con la etiqueta {{CODE_REQUEST}}. Si solo explicas, no la uses.",
+      programming: `Eres Senior Developer Mentor.
+      REGLA DE CÓDIGO CRUCIAL:
+      1. Si la pregunta es TEÓRICA o de CONCEPTO, usa botones de opciones {{Opción A|Opción B}}.
+      2. SI Y SOLO SI pides al alumno que ESCRIBA CÓDIGO para resolver un problema, TERMINA tu respuesta con la etiqueta {{CODE_REQUEST}}.
+      3. No uses {{CODE_REQUEST}} si solo estás explicando o dando ejemplos. Solo cuando esperes input de código del alumno.`,
       letters: "Eres Profesor de Literatura. Usa citas elegantes precedidas por el signo mayor que (>).",
       other: "Eres un tutor experto y adaptable."
     }
@@ -288,8 +394,8 @@ export default function Dashboard() {
     const specificRole = categoryPrompts[course.category] || categoryPrompts.other
 
     return `CONTEXTO: Curso "${course.title}". TEMARIO: [${syllabusList}]. ROL: ${specificRole}. 
-    REGLAS DE INTERACCIÓN: 
-    1. Para dar opciones de respuesta, SIEMPRE usa el formato {{Opción A|Opción B}} al final para que sean botones. 
+    REGLAS GLOBALES DE INTERACCIÓN: 
+    1. Para preguntas de selección múltiple, SIEMPRE usa el formato {{Opción A|Opción B}} al final para que aparezcan los botones. 
     2. Las fórmulas matemáticas SIEMPRE entre doble signo dolar ($$). 
     3. Citas literarias o de texto importante usar formato markdown quote (> Cita).
     4. Sé didáctico y motivador.`
@@ -299,13 +405,12 @@ export default function Dashboard() {
   const renderRichMessage = (text: string, category: CourseCategory) => {
     if (!text) return null;
     
-    // 1. Separar bloques de código (``` ... ```)
     const parts = text.split(/(```[\s\S]*?```)/g);
     
     return parts.map((part, index) => {
-      // A. Bloque de Código
+      // A. Bloque de Código (Display de la IA)
       if (part.startsWith('```')) {
-        const code = part.slice(3, -3).replace(/^.*\n/, ''); // Remover primera línea (idioma)
+        const code = part.slice(3, -3).replace(/^.*\n/, ''); 
         return (
           <div key={index} className="my-3 rounded-lg overflow-hidden border border-gray-700 bg-[#1e1e1e] shadow-lg">
             <div className="bg-[#2d2d2d] px-3 py-1 text-xs text-gray-400 border-b border-gray-700 flex items-center gap-2">
@@ -317,19 +422,13 @@ export default function Dashboard() {
         );
       }
 
-      // B. Procesamiento de Texto (Matemáticas, Citas, Markdown simple)
       let content = part;
 
-      // Renderizar Citas con formato Markdown (>) o comillas largas
       if (content.includes('> ') || content.match(/".{20,}"/)) {
-         // Transformar markdown quote a div elegante
          content = content.replace(/^> (.*$)/gm, '<div class="my-4 p-4 bg-[#fdf6e3] dark:bg-[#2c2b25] border-l-4 border-[#d33682] text-[#657b83] dark:text-[#a8a19f] font-serif italic text-lg leading-relaxed shadow-sm">"$1"</div>');
-         // Transformar comillas largas heredadas
          content = content.replace(/"([^"]{20,})"/g, '<div class="my-4 p-4 bg-[#fdf6e3] dark:bg-[#2c2b25] border-l-4 border-[#d33682] text-[#657b83] dark:text-[#a8a19f] font-serif italic text-lg leading-relaxed shadow-sm">"$1"</div>');
       }
 
-      // Renderizar Fórmulas Matemáticas ($$...$$) - Estilo Bloque Bonito
-      // Aplicar esto en todas las categorías si detecta $$
       const mathBlocks = content.split(/(\$\$[\s\S]*?\$\$)/g);
       if (mathBlocks.length > 1) {
         return mathBlocks.map((block, i) => {
@@ -347,44 +446,18 @@ export default function Dashboard() {
         });
       }
 
-      // Default rendering
       return <span key={index} dangerouslySetInnerHTML={{ __html: formatInlineText(content, category) }} />;
     });
   };
 
-  // Formato inline simple (negritas, listas, variables)
   const formatInlineText = (text: string, cat: CourseCategory) => {
     let fmt = text
       .replace(/\*\*(.*?)\*\*/g, '<strong class="font-bold text-indigo-600 dark:text-indigo-400">$1</strong>')
       .replace(/^\* (.*$)/gm, '<li class="ml-4 list-disc marker:text-indigo-500 mb-1">$1</li>')
       .replace(/\n/g, '<br/>');
     
-    // Variables matemáticas inline ($x$)
     fmt = fmt.replace(/\$([^$]+?)\$/g, '<span class="font-serif italic bg-gray-100 dark:bg-gray-800 px-1 rounded text-pink-600 dark:text-pink-400 font-medium">$1</span>');
     return fmt;
-  }
-
-  // --- EDITOR DE CÓDIGO (LÓGICA MEJORADA) ---
-  const handleCodeKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Tab') { 
-      e.preventDefault(); 
-      e.currentTarget.setRangeText('  ', e.currentTarget.selectionStart, e.currentTarget.selectionStart, 'end'); 
-    }
-    const pairs: Record<string, string> = { '(': ')', '{': '}', '[': ']', '"': '"', "'": "'" };
-    if (pairs[e.key]) {
-      e.preventDefault();
-      const start = e.currentTarget.selectionStart;
-      const end = e.currentTarget.selectionEnd;
-      const val = e.currentTarget.value;
-      const before = val.substring(0, start);
-      const after = val.substring(end);
-      
-      const newVal = before + e.key + pairs[e.key] + after;
-      e.currentTarget.value = newVal;
-      e.currentTarget.selectionStart = start + 1;
-      e.currentTarget.selectionEnd = start + 1;
-      setInputMsg(newVal); 
-    }
   }
 
   // --- ACCIONES CRUD ---
@@ -398,29 +471,17 @@ export default function Dashboard() {
   const handleDeleteCourse = async (courseId: number, e: React.MouseEvent) => {
     e.stopPropagation();
     if(!confirm("¿Estás seguro de eliminar este curso? Se perderán los datos asociados.")) return;
-    
     const { error } = await supabase.from('courses').delete().eq('id', courseId);
-    if (error) {
-        alert("Error al eliminar: " + error.message);
-    } else {
-        fetchCourses('teacher', user.id);
-    }
+    if (error) alert("Error al eliminar: " + error.message);
+    else fetchCourses('teacher', user.id);
   }
 
   const handleLeaveCourse = async () => {
     if(!selectedCourse || !user) return;
     if(!confirm(`¿Deseas abandonar el curso "${selectedCourse.title}"?`)) return;
-
-    // Nota: supabase require una policy DELETE para enrollments
     const { error } = await supabase.from('enrollments').delete().match({ student_id: user.id, course_id: selectedCourse.id });
-    
-    if (error) {
-        alert("No se pudo abandonar el curso. Intenta más tarde.");
-        console.error(error);
-    } else {
-        setView('courses');
-        fetchCourses('student', user.id);
-    }
+    if (error) alert("No se pudo abandonar el curso.");
+    else { setView('courses'); fetchCourses('student', user.id); }
   }
 
   const handleEditCourse = (course: Course, e: React.MouseEvent) => {
@@ -506,7 +567,7 @@ export default function Dashboard() {
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {myCourses.map(c => (
-                  <div key={c.id} onClick={() => { setSelectedCourse(c); setView('course_detail'); fetchChatHistory(c.id); fetchSessions(c.id); if(profile?.role==='teacher') {fetchEnrolledStudents(c.id); try { const parsed = JSON.parse(c.syllabus || '[]'); setSyllabusItems(Array.isArray(parsed) ? parsed : []); } catch { setSyllabusItems([]); }} }}
+                  <div key={c.id} onClick={() => { setSelectedCourse(c); setView('course_detail'); fetchChatHistory(c.id); fetchSessions(c.id); if(profile?.role==='teacher') { try { const parsed = JSON.parse(c.syllabus || '[]'); setSyllabusItems(Array.isArray(parsed) ? parsed : []); } catch { setSyllabusItems([]); }} }}
                         className="group bg-white dark:bg-gray-800 rounded-2xl border dark:border-gray-700 overflow-hidden cursor-pointer hover:shadow-2xl hover:-translate-y-1 transition-all duration-300 relative">
                     <div className={`h-36 p-6 flex flex-col justify-between relative overflow-hidden
                       ${c.category === 'math' ? 'bg-gradient-to-br from-blue-600 to-cyan-500' : 
@@ -577,15 +638,21 @@ export default function Dashboard() {
                    // VISTA PROFESOR (Gestión)
                    <div className="flex-1 p-8 overflow-y-auto grid grid-cols-1 xl:grid-cols-2 gap-8">
                       <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border dark:border-gray-700">
-                        <h3 className="font-bold text-lg mb-4 flex items-center gap-2"><Users className="text-indigo-500"/> Estudiantes ({enrolledStudents.length})</h3>
+                        <div className="flex justify-between items-center mb-4">
+                           <h3 className="font-bold text-lg flex items-center gap-2"><Users className="text-indigo-500"/> Estudiantes ({enrolledStudents.length})</h3>
+                           <button onClick={() => fetchEnrolledStudents(selectedCourse.id)} disabled={loadingStudents} className="p-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 hover:bg-indigo-100 dark:hover:bg-indigo-900/30 text-gray-500 hover:text-indigo-600 transition-colors" title="Actualizar lista">
+                              <RefreshCw className={`w-3.5 h-3.5 ${loadingStudents ? 'animate-spin' : ''}`}/>
+                           </button>
+                        </div>
                         <div className="max-h-96 overflow-y-auto space-y-2">
                            {enrolledStudents.map(st => (
                              <div key={st.id} className="flex items-center gap-3 p-3 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-xl transition-colors">
-                               <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 text-white flex items-center justify-center font-bold text-xs">{st.full_name[0]}</div>
+                               <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 text-white flex items-center justify-center font-bold text-xs">{st.full_name?.[0] || '?'}</div>
                                <span className="text-sm font-medium">{st.full_name}</span>
                              </div>
                            ))}
-                           {enrolledStudents.length === 0 && <p className="text-gray-400 text-sm italic">Sin inscritos aún.</p>}
+                           {!loadingStudents && enrolledStudents.length === 0 && <p className="text-gray-400 text-sm italic">Sin inscritos aún.</p>}
+                           {loadingStudents && <p className="text-gray-400 text-xs animate-pulse">Cargando...</p>}
                         </div>
                       </div>
 
@@ -650,31 +717,15 @@ export default function Dashboard() {
                                      </div>
                                    )}
 
-                                   {/* EDITOR DE CÓDIGO INCRUSTADO */}
+                                   {/* EDITOR DE CÓDIGO INCRUSTADO (Solo si se pidió) */}
                                    {msg.isCodeRequest && (
-                                     <div className="mt-2 w-full rounded-xl overflow-hidden border border-gray-700 shadow-2xl bg-[#1e1e1e] ring-4 ring-gray-900/5">
-                                        <div className="flex items-center justify-between px-4 py-2 bg-[#252526] border-b border-[#333]">
-                                            <span className="text-xs font-bold text-gray-400 flex items-center gap-2"><CodeIcon className="w-3 h-3 text-blue-400"/> EDITOR DEL ESTUDIANTE</span>
-                                            <div className="flex gap-1.5"><div className="w-2.5 h-2.5 rounded-full bg-red-500"/><div className="w-2.5 h-2.5 rounded-full bg-yellow-500"/><div className="w-2.5 h-2.5 rounded-full bg-green-500"/></div>
-                                        </div>
-                                        <div className="relative">
-                                           <textarea 
-                                             ref={editorRef}
-                                             disabled={!codeEditorVisible && i !== messages.length - 1} 
-                                             onKeyDown={handleCodeKeyDown}
-                                             className={`w-full h-64 bg-[#1e1e1e] text-[#d4d4d4] font-mono text-sm p-4 outline-none resize-none leading-relaxed ${(!codeEditorVisible && i !== messages.length - 1) ? 'opacity-50' : ''}`}
-                                             placeholder="// Escribe tu solución aquí..." 
-                                             value={inputMsg} 
-                                             onChange={(e) => setInputMsg(e.target.value)} 
-                                             spellCheck={false}
-                                           />
-                                           {codeEditorVisible && i === messages.length - 1 && (
-                                              <button onClick={() => handleSendMessage()} 
-                                                 className="absolute bottom-4 right-4 bg-green-600 hover:bg-green-500 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-lg flex items-center gap-2 transition-all transform hover:scale-105">
-                                                 <Play className="w-3 h-3 fill-current"/> EJECUTAR Y ENVIAR
-                                              </button>
-                                           )}
-                                        </div>
+                                     <div className="mt-2 w-full">
+                                        <CodeEditor 
+                                            value={inputMsg} 
+                                            onChange={(v) => setInputMsg(v)} 
+                                            onRun={() => handleSendMessage()}
+                                            readOnly={i !== messages.length - 1 || !codeEditorVisible}
+                                        />
                                      </div>
                                    )}
                                 </div>
