@@ -8,7 +8,7 @@ import {
   LogOut, Plus, Book, User, Send, Bot, 
   GraduationCap, Sun, Moon, Search, RefreshCw, 
   Calendar as CalendarIcon, Lightbulb, Code as CodeIcon,
-  Play, Video, ExternalLink, Trash2, Edit, Users, ListChecks, ArrowLeft, Terminal
+  Play, Video, ExternalLink, Trash2, Edit, Users, ListChecks, ArrowLeft, Terminal, X, GripVertical, Check
 } from 'lucide-react'
 import { useTheme } from 'next-themes'
 
@@ -22,8 +22,8 @@ type Course = {
   description: string, 
   category: CourseCategory,
   created_by: string,
-  syllabus?: string,
-  profiles?: { full_name: string } // Relación opcional
+  syllabus?: string, // Ahora guardaremos un JSON string aquí
+  profiles?: { full_name: string } 
 }
 
 type Session = {
@@ -43,16 +43,16 @@ type Message = {
   isCodeRequest?: boolean 
 }
 
-// Utilidad para resaltar código (Simulación de sintaxis para visualización)
+// Utilidad para resaltar código
 const highlightCode = (code: string) => {
   if (!code) return '';
   let html = code
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    .replace(/\b(function|const|let|var|if|else|return|import|from|class|export|async|await|def|for|while|try|catch)\b/g, '<span class="text-[#c678dd] font-bold">$1</span>') // Keywords
-    .replace(/\b(console|log|map|filter|reduce|push|print|len|range)\b/g, '<span class="text-[#61afef]">$1</span>') // Methods
-    .replace(/('.*?'|".*?"|`.*?`)/g, '<span class="text-[#98c379]">$1</span>') // Strings
-    .replace(/\b(\d+)\b/g, '<span class="text-[#d19a66]">$1</span>') // Numbers
-    .replace(/(\/\/.*$|#.*$)/gm, '<span class="text-[#5c6370] italic">$1</span>'); // Comments
+    .replace(/\b(function|const|let|var|if|else|return|import|from|class|export|async|await|def|for|while|try|catch)\b/g, '<span class="text-[#c678dd] font-bold">$1</span>')
+    .replace(/\b(console|log|map|filter|reduce|push|print|len|range)\b/g, '<span class="text-[#61afef]">$1</span>')
+    .replace(/('.*?'|".*?"|`.*?`)/g, '<span class="text-[#98c379]">$1</span>')
+    .replace(/\b(\d+)\b/g, '<span class="text-[#d19a66]">$1</span>')
+    .replace(/(\/\/.*$|#.*$)/gm, '<span class="text-[#5c6370] italic">$1</span>');
   return html;
 }
 
@@ -74,12 +74,14 @@ export default function Dashboard() {
   const [courseSessions, setCourseSessions] = useState<Session[]>([])
   const [enrolledStudents, setEnrolledStudents] = useState<Profile[]>([]) 
   
-  // Formularios
+  // Formularios Curso
   const [newCourseTitle, setNewCourseTitle] = useState('')
   const [newCourseDesc, setNewCourseDesc] = useState('')
   const [newCourseCategory, setNewCourseCategory] = useState<CourseCategory>('other')
   const [editingCourseId, setEditingCourseId] = useState<number | null>(null)
-  const [syllabusInput, setSyllabusInput] = useState('')
+  
+  // Estado para el Sílabo por Bloques
+  const [syllabusItems, setSyllabusItems] = useState<string[]>([])
 
   // Chat y Editor
   const [messages, setMessages] = useState<Message[]>([])
@@ -92,17 +94,14 @@ export default function Dashboard() {
   const chatEndRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<HTMLTextAreaElement>(null)
 
-  // --- 1. CARGA INICIAL ROBUSTA ---
+  // --- 1. CARGA INICIAL ---
   const fetchProfile = useCallback(async (currentUser: any) => {
     try {
       const { data, error } = await supabase.from('profiles').select('*').eq('id', currentUser.id).maybeSingle()
-      
       if (!data || error) {
-        console.log("Perfil no encontrado, creando uno nuevo...");
+        // Autocuración
         await supabase.from('profiles').upsert({
-          id: currentUser.id, 
-          full_name: currentUser.email?.split('@')[0] || 'Usuario', 
-          role: 'student'
+          id: currentUser.id, full_name: currentUser.email?.split('@')[0] || 'Usuario', role: 'student'
         })
         window.location.reload()
         return
@@ -110,10 +109,7 @@ export default function Dashboard() {
       setProfile(data)
       setLoadingProfile(false)
       fetchCourses(data.role, currentUser.id)
-    } catch (err) { 
-      console.error("Error crítico login:", err); 
-      setLoadingProfile(false) 
-    }
+    } catch (err) { console.error(err); setLoadingProfile(false) }
   }, [])
 
   useEffect(() => {
@@ -126,11 +122,10 @@ export default function Dashboard() {
     init()
   }, [router, fetchProfile])
 
-  // --- 2. GESTIÓN DE DATOS (BLINDADA CON FALLBACKS) ---
+  // --- 2. GESTIÓN DE DATOS ---
   const fetchCourses = async (role: string | undefined, userId: string) => {
     try {
       if (role === 'teacher') {
-        // Docente: Sus cursos creados
         const { data: complexData, error } = await supabase.from('courses').select('*, profiles(full_name)').eq('created_by', userId)
         if (error || !complexData) {
            const { data: simpleData } = await supabase.from('courses').select('*').eq('created_by', userId)
@@ -139,33 +134,37 @@ export default function Dashboard() {
            setMyCourses(complexData)
         }
       } else {
-        // Estudiante: Cursos inscritos
-        // Intentamos traer con nombre de profe
-        const { data: enrollData, error: enrollError } = await supabase.from('enrollments').select('course_id, courses(*, profiles(full_name))').eq('student_id', userId)
+        // Estudiante
+        const { data: enrollData } = await supabase.from('enrollments').select('course_id, courses(*, profiles(full_name))').eq('student_id', userId)
+        const enrolled = enrollData?.map((e: any) => e.courses).filter(Boolean) || []
+        setMyCourses(enrolled)
         
-        if (enrollError || !enrollData) {
-            // Si falla, intentamos traer simple
-            const { data: simpleEnroll } = await supabase.from('enrollments').select('course_id, courses(*)').eq('student_id', userId)
-            setMyCourses(simpleEnroll?.map((e: any) => e.courses).filter(Boolean) || [])
-        } else {
-            setMyCourses(enrollData.map((e: any) => e.courses).filter(Boolean) || [])
-        }
-        
-        // Explorar: Todos los cursos
         const { data: allData } = await supabase.from('courses').select('*, profiles(full_name)')
-        if (!allData) {
-            const { data: simpleAll } = await supabase.from('courses').select('*')
-            setCourses(simpleAll || [])
-        } else {
-            setCourses(allData)
-        }
+        setCourses(allData || [])
       }
-    } catch (e) { console.error("Error fetchCourses", e) }
+    } catch (e) { console.error(e) }
   }
 
+  // Fetch de estudiantes ROBUSTO (separado para evitar errores de join)
   const fetchEnrolledStudents = async (courseId: number) => {
-    const { data } = await supabase.from('enrollments').select('student_id, profiles(*)').eq('course_id', courseId)
-    setEnrolledStudents(data?.map((e: any) => e.profiles).filter(Boolean) || [])
+    try {
+      // 1. Obtener IDs de estudiantes
+      const { data: enrollments, error } = await supabase.from('enrollments').select('student_id').eq('course_id', courseId)
+      
+      if (error || !enrollments || enrollments.length === 0) {
+        setEnrolledStudents([])
+        return
+      }
+
+      const studentIds = enrollments.map(e => e.student_id)
+
+      // 2. Obtener perfiles reales
+      const { data: profiles } = await supabase.from('profiles').select('*').in('id', studentIds)
+      setEnrolledStudents(profiles || [])
+    } catch (e) {
+      console.error("Error fetching students:", e)
+      setEnrolledStudents([])
+    }
   }
 
   const fetchSessions = async (courseId: number) => {
@@ -181,25 +180,19 @@ export default function Dashboard() {
     
     if (data && data.length > 0) {
       setMessages(data.map(m => ({
-        id: m.id,
-        role: m.role as 'user' | 'model',
-        content: m.content,
-        timestamp: new Date(m.created_at),
-        options: m.options ? JSON.parse(m.options as any) : undefined,
-        isCodeRequest: m.is_code_request
+        id: m.id, role: m.role as 'user' | 'model', content: m.content, timestamp: new Date(m.created_at),
+        options: m.options ? JSON.parse(m.options as any) : undefined, isCodeRequest: m.is_code_request
       })))
       if (data[data.length - 1].is_code_request) setCodeEditorVisible(true)
     } else {
       setMessages([])
-      // Si no hay historial, NO iniciar auto, esperar a que el usuario presione el boton o escriba
     }
     setAiLoading(false)
   }
 
   const initAiConversation = async (course: Course) => {
     const sysPrompt = getSystemPrompt(course)
-    // Mensaje inicial invisible para configurar el contexto
-    const res = await chatWithGemini("Hola, soy el estudiante. Inicia la clase saludando y hazme una pregunta basada en el sílabo.", sysPrompt, [])
+    const res = await chatWithGemini("Hola, soy el estudiante. Inicia la clase saludando y hazme una pregunta del primer tema del sílabo.", sysPrompt, [])
     if (res.success) processAiResponse(res.message, course.id)
   }
 
@@ -215,7 +208,6 @@ export default function Dashboard() {
 
     await supabase.from('chat_messages').insert({ user_id: user.id, course_id: selectedCourse.id, role: 'user', content: txt })
 
-    // REENVÍO CONSTANTE DEL CONTEXTO Y SÍLABO
     const sysPrompt = getSystemPrompt(selectedCourse)
     const res = await chatWithGemini(txt, sysPrompt, messages)
     
@@ -237,22 +229,24 @@ export default function Dashboard() {
   }
 
   const getSystemPrompt = (course: Course) => {
-    const syllabus = course.syllabus ? `SÍLABO DEL CURSO (ÚSALO PARA GUIAR LA CLASE):\n${course.syllabus}` : "Define los temas clave tú mismo."
+    // Parseamos el sílabo si es JSON, sino usamos el texto plano antiguo
+    let syllabusList = "Temas generales."
+    try {
+      if (course.syllabus) {
+        const parsed = JSON.parse(course.syllabus)
+        if (Array.isArray(parsed)) syllabusList = parsed.join(", ")
+        else syllabusList = course.syllabus
+      }
+    } catch { syllabusList = course.syllabus || "" }
+
+    const syllabusPrompt = `TEMARIO OBLIGATORIO: [${syllabusList}]. (Sigue estrictamente este orden de temas).`
     
     let roleInstructions = "Eres un tutor experto."
-    if (course.category === 'math') roleInstructions = "Eres un profesor de Matemáticas. Usa LaTeX ($$) para fórmulas complejas. Sé visual y explica paso a paso."
-    if (course.category === 'programming') roleInstructions = "Eres un Senior Developer. Si pides al estudiante que escriba código para resolver un problema, TERMINA tu mensaje con la etiqueta {{CODE_REQUEST}}. Evalúa su lógica, indentación y eficiencia."
-    if (course.category === 'letters') roleInstructions = "Eres un profesor de Literatura. Usa un lenguaje elegante, estructura en párrafos claros y evita símbolos markdown como **. Usa negritas HTML <b> si es necesario."
+    if (course.category === 'math') roleInstructions = "Eres Profesor de Matemáticas. Usa LaTeX ($$) para fórmulas. Sé visual."
+    if (course.category === 'programming') roleInstructions = "Eres Senior Dev. Si pides código, TERMINA con {{CODE_REQUEST}}. Evalúa sintaxis."
+    if (course.category === 'letters') roleInstructions = "Eres Profesor de Literatura. Lenguaje elegante."
     
-    return `
-      CONTEXTO: Curso de "${course.title}". ${syllabus}
-      ROL: ${roleInstructions}
-      
-      REGLAS OBLIGATORIAS:
-      1. Si haces una pregunta de opción múltiple, pon las opciones AL FINAL de tu respuesta así: {{Opción 1|Opción 2|Opción 3}}
-      2. Si es un ejercicio de programación donde el estudiante debe escribir, pon al final: {{CODE_REQUEST}}
-      3. Mantén las explicaciones claras y bonitas.
-    `
+    return `CONTEXTO: Curso "${course.title}". ${syllabusPrompt}. ROL: ${roleInstructions}. REGLAS: 1. Si preguntas, usa {{Opción A|Opción B|...}} SIEMPRE. 2. Si pides código, {{CODE_REQUEST}}. 3. Respuestas bonitas.`
   }
 
   const parseAiResponse = (text: string) => {
@@ -268,78 +262,71 @@ export default function Dashboard() {
     return { text: cleanText, options, isCodeRequest }
   }
 
-  // --- 4. RENDERIZADO VISUAL ---
   const renderRichText = (text: string, category: CourseCategory) => {
     if (!text) return null
     return text.split(/(```[\s\S]*?```)/g).map((block, i) => {
-      // Bloques de Código
       if (block.startsWith('```')) {
         const code = block.slice(3, -3).replace(/^.*\n/, '')
         return (
-          <div key={i} className="my-4 rounded-xl overflow-hidden border border-gray-700 bg-[#1e1e1e] shadow-lg group">
-            <div className="bg-[#2d2d2d] px-4 py-2 text-xs text-gray-400 flex items-center justify-between border-b border-gray-700">
-              <span className="flex items-center gap-2"><Terminal className="w-3 h-3"/> Ejemplo de Código</span>
-            </div>
-            <pre className="p-4 overflow-x-auto text-sm font-mono text-[#abb2bf] leading-relaxed" dangerouslySetInnerHTML={{ __html: highlightCode(code) }} />
+          <div key={i} className="my-4 rounded-xl overflow-hidden border border-gray-700 bg-[#1e1e1e] shadow-lg">
+            <div className="bg-[#2d2d2d] px-4 py-2 text-xs text-gray-400 border-b border-gray-700"><Terminal className="w-3 h-3 inline mr-2"/> Ejemplo</div>
+            <pre className="p-4 overflow-x-auto text-sm font-mono text-[#abb2bf]" dangerouslySetInnerHTML={{ __html: highlightCode(code) }} />
           </div>
         )
       }
-      
-      // Texto Normal + Fórmulas
       let fmt = block
-      if (category === 'math') {
-        fmt = fmt.replace(/\$\$(.*?)\$\$/g, '<div class="my-3 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-lg text-center font-serif text-xl shadow-sm text-blue-900 dark:text-blue-100">$1</div>')
-        fmt = fmt.replace(/\$(.*?)\$/g, '<span class="font-serif italic bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded mx-1 border dark:border-gray-700 font-medium">$1</span>')
-      }
-      
-      // Limpieza Markdown
-      fmt = fmt.replace(/\*\*(.*?)\*\*/g, '<strong class="font-bold text-indigo-700 dark:text-indigo-400">$1</strong>')
-               .replace(/^\* (.*$)/gm, '<li class="ml-6 list-disc marker:text-indigo-500 mb-1">$1</li>')
-               .replace(/\n/g, '<br/>')
-               
-      return <span key={i} dangerouslySetInnerHTML={{ __html: fmt }} className={`text-base leading-7 ${category === 'letters' ? 'font-serif text-gray-800 dark:text-gray-200' : 'text-gray-700 dark:text-gray-300'}`}/>
+      if (category === 'math') fmt = fmt.replace(/\$\$(.*?)\$\$/g, '<div class="my-3 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-lg text-center font-serif text-xl">$1</div>').replace(/\$(.*?)\$/g, '<span class="font-serif italic bg-gray-100 dark:bg-gray-800 px-1.5 rounded mx-1 font-medium">$1</span>')
+      fmt = fmt.replace(/\*\*(.*?)\*\*/g, '<strong class="font-bold text-indigo-600 dark:text-indigo-400">$1</strong>').replace(/^\* (.*$)/gm, '<li class="ml-5 list-disc marker:text-indigo-500 mb-1">$1</li>').replace(/\n/g, '<br/>')
+      return <span key={i} dangerouslySetInnerHTML={{ __html: fmt }} className={category === 'letters' ? 'font-serif text-gray-800 dark:text-gray-200' : 'text-gray-700 dark:text-gray-300'}/>
     })
   }
 
-  // --- 5. EDITOR DE CÓDIGO (LÓGICA PRO) ---
-  const handleCodeKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    const target = e.target as HTMLTextAreaElement;
-    
-    // Tabulación (Indentación)
-    if (e.key === 'Tab') {
-      e.preventDefault();
-      target.setRangeText('  ', target.selectionStart, target.selectionStart, 'end');
-    }
-    
-    // Autocompletado de pares
-    const pairs: Record<string, string> = { '(': ')', '{': '}', '[': ']', '"': '"', "'": "'", '`': '`' };
-    if (pairs[e.key]) {
-      e.preventDefault();
-      const start = target.selectionStart;
-      const end = target.selectionEnd;
-      target.setRangeText(e.key + pairs[e.key], start, end, 'end');
-      target.selectionStart = start + 1;
-      target.selectionEnd = start + 1;
-    }
-  }
-
-  // --- 6. ACCIONES DOCENTE ---
+  // --- 5. LÓGICA DE SÍLABO (BLOQUES) ---
   const generateSyllabus = async () => {
     if (!selectedCourse) return
-    alert("La IA está diseñando el plan de estudios...")
-    const res = await chatWithGemini(`Genera un sílabo estructurado de 5 temas clave para el curso "${selectedCourse.title}" (${selectedCourse.category}). Solo la lista numerada.`, "Experto Curricular", [])
-    if (res.success) setSyllabusInput(res.message)
+    alert("Generando plan de estudios estructurado...")
+    // Pedimos un JSON array estricto a la IA
+    const res = await chatWithGemini(`Genera un sílabo de 5 temas clave para el curso "${selectedCourse.title}" (${selectedCourse.category}). Responde SOLAMENTE con un array JSON de strings válidos. Ejemplo: ["Tema 1", "Tema 2"]`, "System", [])
+    
+    if (res.success) {
+      try {
+        // Limpiamos la respuesta por si la IA añade texto extra
+        const jsonMatch = res.message.match(/\[[\s\S]*\]/)
+        if (jsonMatch) {
+          const items = JSON.parse(jsonMatch[0])
+          setSyllabusItems(items)
+        } else {
+          // Fallback si no es JSON
+          setSyllabusItems(res.message.split('\n').filter(l => l.trim().length > 0))
+        }
+      } catch (e) {
+        alert("Error procesando respuesta IA, intenta de nuevo.")
+      }
+    }
   }
 
   const saveSyllabus = async () => {
     if (!selectedCourse) return
-    const { error } = await supabase.from('courses').update({ syllabus: syllabusInput }).eq('id', selectedCourse.id)
+    const jsonSyllabus = JSON.stringify(syllabusItems)
+    const { error } = await supabase.from('courses').update({ syllabus: jsonSyllabus }).eq('id', selectedCourse.id)
     if (!error) { 
-        alert("Sílabo guardado. La IA lo usará para enseñar."); 
-        setSelectedCourse({ ...selectedCourse, syllabus: syllabusInput }); 
+        alert("Sílabo guardado exitosamente"); 
+        setSelectedCourse({ ...selectedCourse, syllabus: jsonSyllabus }); 
     }
   }
 
+  const addSyllabusItem = () => setSyllabusItems([...syllabusItems, "Nuevo tema"])
+  const updateSyllabusItem = (index: number, val: string) => {
+    const newItems = [...syllabusItems]
+    newItems[index] = val
+    setSyllabusItems(newItems)
+  }
+  const removeSyllabusItem = (index: number) => {
+    const newItems = syllabusItems.filter((_, i) => i !== index)
+    setSyllabusItems(newItems)
+  }
+
+  // --- OTRAS ACCIONES ---
   const createOrUpdateCourse = async () => {
     try {
       const payload = { title: newCourseTitle, description: newCourseDesc, category: newCourseCategory }
@@ -348,22 +335,37 @@ export default function Dashboard() {
       setNewCourseTitle(''); setNewCourseDesc(''); setEditingCourseId(null); setView('courses'); fetchCourses('teacher', user.id)
     } catch (e: any) { alert(e.message) }
   }
-
-  const deleteCourse = async (id: number) => { 
-      if (confirm("¿Eliminar curso?")) { 
-          await supabase.from('courses').delete().eq('id', id); 
-          fetchCourses('teacher', user.id); 
-      } 
+  const deleteCourse = async (id: number) => { if (confirm("¿Eliminar?")) { await supabase.from('courses').delete().eq('id', id); fetchCourses('teacher', user.id); } }
+  const leaveCourse = async (id: number) => { if (confirm("¿Salir?")) { await supabase.from('enrollments').delete().eq('course_id', id).eq('student_id', user.id); fetchCourses('student', user.id); } }
+  const scheduleSession = async () => {
+    await supabase.from('sessions').insert({ course_id: selectedCourse!.id, ...sessionData })
+    setShowSessionForm(false); fetchSessions(selectedCourse!.id); alert("Sesión creada")
   }
   
-  const leaveCourse = async (id: number) => { 
-      if (confirm("¿Salir del curso?")) { 
-          await supabase.from('enrollments').delete().eq('course_id', id).eq('student_id', user.id); 
-          fetchCourses('student', user.id); 
-      } 
+  const handleCodeKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Tab') { e.preventDefault(); e.currentTarget.setRangeText('  ', e.currentTarget.selectionStart, e.currentTarget.selectionStart, 'end'); }
+    const pairs: Record<string, string> = { '(': ')', '{': '}', '[': ']', '"': '"', "'": "'" };
+    if (pairs[e.key]) {
+      e.preventDefault();
+      const start = e.currentTarget.selectionStart;
+      e.currentTarget.setRangeText(e.key + pairs[e.key], start, e.currentTarget.selectionEnd, 'end');
+      e.currentTarget.selectionStart = start + 1; e.currentTarget.selectionEnd = start + 1;
+    }
   }
 
-  // --- RENDER ---
+  // --- INIT DEL SÍLABO EN EDICIÓN ---
+  const initSyllabusEditor = (course: Course) => {
+    try {
+      if (course.syllabus) {
+        const parsed = JSON.parse(course.syllabus)
+        if (Array.isArray(parsed)) setSyllabusItems(parsed)
+        else setSyllabusItems(course.syllabus.split('\n')) // Retrocompatibilidad texto plano
+      } else {
+        setSyllabusItems([])
+      }
+    } catch { setSyllabusItems([]) }
+  }
+
   if (!mounted) return null
   if (loadingProfile) return <div className="h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900"><RefreshCw className="animate-spin text-blue-600 w-8 h-8"/></div>
 
@@ -373,21 +375,16 @@ export default function Dashboard() {
       {/* SIDEBAR */}
       <aside className="w-20 lg:w-72 bg-white dark:bg-[#0f172a] border-r border-gray-200 dark:border-gray-800 flex flex-col z-20 shadow-xl">
         <div className="p-6 flex items-center gap-3 border-b dark:border-gray-800">
-          <div className="bg-indigo-600 p-2 rounded-xl text-white shadow-lg shadow-indigo-500/30"><GraduationCap /></div>
+          <div className="bg-indigo-600 p-2 rounded-xl text-white shadow-lg"><GraduationCap /></div>
           <span className="font-bold text-xl dark:text-white hidden lg:block tracking-tight">E-Learning</span>
         </div>
         <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
-          <button onClick={() => { setView('courses'); if (user && profile) fetchCourses(profile.role, user.id); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${view === 'courses' ? 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 font-semibold' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800'}`}>
-            <Book className="w-5 h-5" /> <span className="hidden lg:block">Mis Cursos</span>
-          </button>
-          <button onClick={() => { setView('create'); setEditingCourseId(null); setNewCourseTitle(''); setNewCourseDesc(''); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${view === 'create' ? 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 font-semibold' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800'}`}>
-            {profile?.role === 'teacher' ? <Plus className="w-5 h-5" /> : <Search className="w-5 h-5" />} 
-            <span className="hidden lg:block">{profile?.role === 'teacher' ? 'Crear Curso' : 'Explorar'}</span>
-          </button>
+          <button onClick={() => { setView('courses'); if (user && profile) fetchCourses(profile.role, user.id); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${view === 'courses' ? 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 font-semibold' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800'}`}><Book className="w-5 h-5" /> <span className="hidden lg:block">Mis Cursos</span></button>
+          <button onClick={() => { setView('create'); setEditingCourseId(null); setNewCourseTitle(''); setNewCourseDesc(''); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${view === 'create' ? 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 font-semibold' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800'}`}>{profile?.role === 'teacher' ? <Plus className="w-5 h-5" /> : <Search className="w-5 h-5" />} <span className="hidden lg:block">{profile?.role === 'teacher' ? 'Crear Curso' : 'Explorar'}</span></button>
         </nav>
         <div className="p-4 border-t dark:border-gray-800 flex gap-2">
-          <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} className="flex-1 p-2 rounded-lg bg-gray-100 dark:bg-gray-800 flex justify-center hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"><Sun className="w-5 h-5 hidden dark:block"/><Moon className="w-5 h-5 block dark:hidden"/></button>
-          <button onClick={() => supabase.auth.signOut().then(() => router.push('/'))} className="flex-1 p-2 rounded-lg bg-red-50 dark:bg-red-900/20 text-red-500 flex justify-center hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors"><LogOut className="w-5 h-5"/></button>
+          <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} className="flex-1 p-2 rounded-lg bg-gray-100 dark:bg-gray-800 flex justify-center hover:bg-gray-200 dark:hover:bg-gray-700"><Sun className="w-5 h-5 hidden dark:block"/><Moon className="w-5 h-5 block dark:hidden"/></button>
+          <button onClick={() => supabase.auth.signOut().then(() => router.push('/'))} className="flex-1 p-2 rounded-lg bg-red-50 dark:bg-red-900/20 text-red-500 flex justify-center hover:bg-red-100 dark:hover:bg-red-900/40"><LogOut className="w-5 h-5"/></button>
         </div>
       </aside>
 
@@ -409,7 +406,7 @@ export default function Dashboard() {
                     <div className="flex gap-2">
                       {profile?.role === 'teacher' ? (
                         <>
-                          <button onClick={() => { setSelectedCourse(c); setSyllabusInput(c.syllabus || ''); fetchEnrolledStudents(c.id); fetchSessions(c.id); setView('course_detail'); }} className="flex-1 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg font-semibold text-sm hover:bg-gray-200 dark:hover:bg-gray-600">Administrar</button>
+                          <button onClick={() => { setSelectedCourse(c); initSyllabusEditor(c); fetchEnrolledStudents(c.id); fetchSessions(c.id); setView('course_detail'); }} className="flex-1 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg font-semibold text-sm hover:bg-gray-200 dark:hover:bg-gray-600">Administrar</button>
                           <button onClick={() => { setEditingCourseId(c.id); setNewCourseTitle(c.title); setNewCourseDesc(c.description); setNewCourseCategory(c.category); setView('create'); }} className="p-2 text-blue-600 bg-blue-50 dark:bg-blue-900/20 rounded-lg hover:bg-blue-100"><Edit className="w-4 h-4"/></button>
                           <button onClick={() => deleteCourse(c.id)} className="p-2 text-red-600 bg-red-50 dark:bg-red-900/20 rounded-lg hover:bg-red-100"><Trash2 className="w-4 h-4"/></button>
                         </>
@@ -441,22 +438,45 @@ export default function Dashboard() {
 
                {profile?.role === 'teacher' ? (
                  <div className="flex-1 p-8 overflow-y-auto grid grid-cols-1 lg:grid-cols-2 gap-8">
+                   
+                   {/* Columna Estudiantes */}
                    <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border dark:border-gray-700 h-fit">
-                     <h3 className="font-bold text-lg mb-4 flex items-center gap-2 dark:text-white"><Users className="w-5 h-5 text-indigo-500"/> Estudiantes Inscritos</h3>
-                     {enrolledStudents.length === 0 ? <p className="text-gray-400 text-sm">Sin estudiantes aún.</p> : (
-                       <ul className="space-y-3">{enrolledStudents.map(st => (<li key={st.id} className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl"><div className="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-bold text-xs">{st.full_name?.[0] || 'U'}</div><span className="text-sm dark:text-gray-200 font-medium">{st.full_name || 'Usuario'}</span></li>))}</ul>
+                     <h3 className="font-bold text-lg mb-4 flex items-center gap-2 dark:text-white"><Users className="w-5 h-5 text-indigo-500"/> Estudiantes Inscritos ({enrolledStudents.length})</h3>
+                     {enrolledStudents.length === 0 ? <p className="text-gray-400 text-sm italic">Esperando inscripciones...</p> : (
+                       <ul className="space-y-3">{enrolledStudents.map(st => (<li key={st.id} className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl"><div className="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-bold text-xs">{st.full_name?.[0]?.toUpperCase() || 'U'}</div><span className="text-sm dark:text-gray-200 font-medium">{st.full_name || 'Usuario sin nombre'}</span></li>))}</ul>
                      )}
                    </div>
+
+                   {/* Columna Sílabo (Bloques Editables) */}
                    <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border dark:border-gray-700 h-full flex flex-col">
-                     <div className="flex justify-between items-center mb-4"><h3 className="font-bold text-lg flex items-center gap-2 dark:text-white"><ListChecks className="w-5 h-5 text-green-500"/> Plan de Estudios (Sílabo)</h3><button onClick={generateSyllabus} className="text-xs bg-green-100 text-green-700 px-3 py-1.5 rounded-lg font-bold flex items-center gap-1 hover:bg-green-200 transition-colors border border-green-200"><Lightbulb className="w-3 h-3"/> Generar con IA</button></div>
-                     <textarea className="flex-1 w-full bg-gray-50 dark:bg-gray-900 border dark:border-gray-600 rounded-xl p-4 text-sm font-mono resize-none focus:ring-2 focus:ring-green-500 outline-none dark:text-gray-200 leading-relaxed" placeholder="1. Introducción al tema..." value={syllabusInput} onChange={e => setSyllabusInput(e.target.value)}/>
-                     <button onClick={saveSyllabus} className="mt-4 w-full bg-indigo-600 text-white py-2 rounded-xl font-bold hover:bg-indigo-700 shadow-lg shadow-indigo-500/20 transition-all">Guardar Cambios</button>
+                     <div className="flex justify-between items-center mb-4">
+                        <h3 className="font-bold text-lg flex items-center gap-2 dark:text-white"><ListChecks className="w-5 h-5 text-green-500"/> Plan de Estudios</h3>
+                        <button onClick={generateSyllabus} className="text-xs bg-green-100 text-green-700 px-3 py-1.5 rounded-lg font-bold flex items-center gap-1 hover:bg-green-200 transition-colors border border-green-200"><Lightbulb className="w-3 h-3"/> Generar con IA</button>
+                     </div>
+                     
+                     <div className="flex-1 overflow-y-auto space-y-3 mb-4 pr-2">
+                        {syllabusItems.length === 0 && <p className="text-gray-400 text-sm text-center py-4 border border-dashed rounded-lg">El sílabo está vacío. Genéralo o agrega temas manualmente.</p>}
+                        {syllabusItems.map((item, idx) => (
+                          <div key={idx} className="flex gap-2 items-start group">
+                            <div className="mt-2 text-gray-400"><GripVertical className="w-4 h-4"/></div>
+                            <textarea 
+                              value={item} 
+                              onChange={(e) => updateSyllabusItem(idx, e.target.value)}
+                              className="flex-1 bg-gray-50 dark:bg-gray-900 border dark:border-gray-600 rounded-lg p-3 text-sm resize-none focus:ring-1 focus:ring-indigo-500 outline-none dark:text-gray-200"
+                              rows={2}
+                            />
+                            <button onClick={() => removeSyllabusItem(idx)} className="mt-2 text-red-400 hover:text-red-600 opacity-0 group-hover:opacity-100 transition-opacity"><X className="w-4 h-4"/></button>
+                          </div>
+                        ))}
+                        <button onClick={addSyllabusItem} className="w-full py-2 border border-dashed border-gray-300 dark:border-gray-600 rounded-lg text-gray-500 text-sm hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center justify-center gap-2">+ Agregar Tema</button>
+                     </div>
+                     <button onClick={saveSyllabus} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 shadow-lg shadow-indigo-500/20 transition-all flex items-center justify-center gap-2"><Check className="w-4 h-4"/> Guardar Cambios</button>
                    </div>
                  </div>
                ) : (
                  <>
                    <div className="flex-1 overflow-y-auto p-6 space-y-6">
-                     {messages.length === 0 && <div className="text-center py-20 opacity-60"><Bot className="w-16 h-16 mx-auto mb-4 text-indigo-300"/><p className="mb-4 dark:text-gray-300">¡Bienvenido! ¿Listo para aprender?</p><button onClick={() => initAiConversation(selectedCourse)} className="bg-indigo-600 text-white px-6 py-2 rounded-full font-bold hover:bg-indigo-700 shadow-lg">Comenzar Clase</button></div>}
+                     {messages.length === 0 && <div className="text-center py-20 opacity-60"><Bot className="w-16 h-16 mx-auto mb-4 text-indigo-300"/><p className="mb-4 dark:text-gray-300 font-medium">¡Bienvenido al curso de {selectedCourse.title}!</p><button onClick={() => initAiConversation(selectedCourse)} className="bg-indigo-600 text-white px-6 py-2 rounded-full font-bold hover:bg-indigo-700 shadow-lg animate-pulse">Comenzar Clase</button></div>}
                      {messages.map((msg, i) => (
                        <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'} max-w-3xl mx-auto w-full animate-in slide-in-from-bottom-2 duration-300`}>
                          <div className={`flex gap-3 max-w-[95%] ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
@@ -468,7 +488,7 @@ export default function Dashboard() {
                              {msg.options && <div className="flex flex-wrap gap-2 mt-1 pl-2">{msg.options.map((opt, idx) => (<button key={idx} onClick={() => handleSendMessage(opt)} className="bg-white dark:bg-gray-800 border-2 border-indigo-100 dark:border-indigo-900/30 px-4 py-2 rounded-xl text-sm hover:border-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 font-medium dark:text-gray-300 transition-all transform active:scale-95">{opt}</button>))}</div>}
                              {msg.isCodeRequest && (
                                <div className="w-full bg-[#1e1e1e] rounded-xl overflow-hidden shadow-2xl border border-gray-700 mt-4">
-                                 <div className="bg-[#252526] px-4 py-2 flex items-center justify-between border-b border-[#333]"><span className="text-gray-400 text-xs flex items-center gap-2 uppercase tracking-wider font-bold"><CodeIcon className="w-3 h-3 text-blue-400" /> Editor de Código</span><div className="flex gap-1.5"><div className="w-2.5 h-2.5 rounded-full bg-red-500"/><div className="w-2.5 h-2.5 rounded-full bg-yellow-500"/><div className="w-2.5 h-2.5 rounded-full bg-green-500"/></div></div>
+                                 <div className="bg-[#252526] px-4 py-2 flex items-center justify-between border-b border-[#333]"><span className="text-gray-400 text-xs flex items-center gap-2 uppercase tracking-wider font-bold"><CodeIcon className="w-3 h-3 text-blue-400" /> Editor de Estudiante</span><div className="flex gap-1.5"><div className="w-2.5 h-2.5 rounded-full bg-red-500"/><div className="w-2.5 h-2.5 rounded-full bg-yellow-500"/><div className="w-2.5 h-2.5 rounded-full bg-green-500"/></div></div>
                                  <textarea ref={editorRef} disabled={!codeEditorVisible && i !== messages.length - 1} onKeyDown={handleCodeKeyDown} className="w-full bg-[#1e1e1e] text-[#d4d4d4] font-mono text-sm p-4 h-64 outline-none resize-none selection:bg-blue-500/30 leading-relaxed" placeholder="// Escribe tu solución aquí..." value={inputMsg} onChange={(e) => setInputMsg(e.target.value)} spellCheck={false}/>
                                  {codeEditorVisible && i === messages.length - 1 && (<div className="p-3 bg-[#252526] flex justify-end border-t border-[#333]"><button onClick={() => handleSendMessage()} className="bg-green-600 hover:bg-green-700 text-white px-5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 uppercase tracking-wide transition-all shadow-lg hover:shadow-green-500/20"><Play className="w-3 h-3" /> Ejecutar Código</button></div>)}
                                </div>
