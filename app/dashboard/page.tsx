@@ -9,8 +9,8 @@ import {
   GraduationCap, Sun, Moon, Search, RefreshCw, 
   Video, ExternalLink, Trash2, Edit, Users, 
   ListChecks, ArrowLeft, Terminal, X, GripVertical, 
-  Check, Play, Code as CodeIcon, Calculator, Feather,
-  LogOut as LeaveIcon, AlertCircle, Save, Ban, Mail
+  Play, Code as CodeIcon, Calculator, Feather,
+  LogOut as LeaveIcon, Save, Ban, Mail, AlertTriangle
 } from 'lucide-react'
 import { useTheme } from 'next-themes'
 
@@ -206,8 +206,10 @@ export default function Dashboard() {
       
       const updates = {
           id: currentUser.id,
-          full_name: currentUser.email, 
+          // Intentamos guardar el email real si existe en auth
           email: currentUser.email,     
+          // Si no tiene full_name, usamos el email
+          full_name: data?.full_name || currentUser.email?.split('@')[0],
           role: data?.role || 'student', 
           updated_at: new Date().toISOString()
       };
@@ -217,7 +219,8 @@ export default function Dashboard() {
         window.location.reload()
         return
       } else {
-        await supabase.from('profiles').update(updates).eq('id', currentUser.id)
+        // Actualizamos el perfil para asegurar que el email esté sincronizado
+        await supabase.from('profiles').update({ email: currentUser.email }).eq('id', currentUser.id)
       }
 
       setProfile(data)
@@ -273,10 +276,11 @@ export default function Dashboard() {
     } catch (e) { console.error("Error fetching courses:", e) }
   }
 
-  // --- GESTIÓN DE ESTUDIANTES ---
+  // --- GESTIÓN DE ESTUDIANTES (CORREGIDO) ---
   const fetchEnrolledStudents = async (courseId: number) => {
     setLoadingStudents(true)
     try {
+        // 1. Obtener IDs de inscripciones
         const { data: enrollments } = await supabase.from('enrollments').select('student_id').eq('course_id', courseId)
         
         if (!enrollments || enrollments.length === 0) { 
@@ -286,25 +290,32 @@ export default function Dashboard() {
         }
 
         const ids = enrollments.map(e => e.student_id)
-        // Pedimos explícitamente el email
-        const { data: profiles } = await supabase.from('profiles').select('*').in('id', ids)
         
-        const validProfiles = profiles || []
-        const foundIds = new Set(validProfiles.map(p => p.id))
+        // 2. Obtener perfiles de esos IDs
+        const { data: profiles, error } = await supabase.from('profiles').select('*').in('id', ids)
         
-        // Fallback visual robusto
-        const placeholders: Profile[] = ids
-            .filter(id => !foundIds.has(id))
-            .map(id => ({ 
-                id, 
-                role: 'student', 
-                full_name: 'Estudiante', 
-                email: 'Cargando email...' // Indicador
-            }))
+        if (error) throw error;
         
-        setEnrolledStudents([...validProfiles, ...placeholders])
-    } catch (e) { console.error("Error fetching students:", e) 
-    } finally { setLoadingStudents(false) }
+        // 3. Mezclar datos. Si el perfil no existe (raro), creamos un objeto dummy para que no falle.
+        // Importante: No usamos "placeholders" de carga, mostramos lo que hay.
+        const finalStudents = ids.map(id => {
+            const found = profiles?.find(p => p.id === id);
+            if (found) return found;
+            return {
+                id,
+                role: 'student',
+                full_name: 'Estudiante Desconocido',
+                email: 'No disponible'
+            } as Profile;
+        })
+
+        setEnrolledStudents(finalStudents)
+
+    } catch (e) { 
+        console.error("Error fetching students:", e) 
+    } finally { 
+        setLoadingStudents(false) 
+    }
   }
 
   const fetchSessions = async (courseId: number) => {
@@ -466,29 +477,42 @@ export default function Dashboard() {
     }
   }
 
-  // ELIMINACIÓN SEGURA
+  // --- ELIMINACIÓN DE CURSO "FUERZA BRUTA" ---
+  // Esta función elimina manualmente todos los registros dependientes 
+  // para evitar errores de Foreign Key si la BD no tiene ON DELETE CASCADE configurado.
   const handleDeleteCourse = async (courseId: number, e: React.MouseEvent) => {
     e.stopPropagation();
-    // Confirmación doble por seguridad
-    if(!confirm("¿Estás seguro de eliminar este curso? Se borrarán todos los estudiantes inscritos y sus chats.")) return;
+    if(!confirm("⚠️ ADVERTENCIA: ¿Estás seguro de eliminar este curso?\nSe borrarán permanentemente todos los estudiantes inscritos, chats, sesiones y tareas.")) return;
     
     try {
-        // NOTA: Si ejecutaste el SQL de CASCADE en Supabase, solo necesitas borrar el curso.
-        // Si no, este bloque intentará borrar manualmente (menos eficiente pero funciona si no hay conflictos complejos).
-        
-        // 1. Intento de limpieza manual (Backup)
+        // 1. Obtener Sesiones de IA para borrar sus mensajes primero
         const { data: aiSessions } = await supabase.from('ai_sessions').select('id').eq('course_id', courseId);
         const aiSessionIds = aiSessions?.map(s => s.id) || [];
         if (aiSessionIds.length > 0) {
+            console.log("Eliminando mensajes de IA...");
             await supabase.from('ai_messages').delete().in('session_id', aiSessionIds);
+            console.log("Eliminando sesiones de IA...");
             await supabase.from('ai_sessions').delete().eq('course_id', courseId);
         }
+
+        // 2. Borrar Mensajes del Chat General
+        console.log("Eliminando chat del curso...");
         await supabase.from('chat_messages').delete().eq('course_id', courseId);
-        await supabase.from('enrollments').delete().eq('course_id', courseId);
+
+        // 3. Borrar Sesiones en Vivo
+        console.log("Eliminando sesiones en vivo...");
         await supabase.from('sessions').delete().eq('course_id', courseId);
+
+        // 4. Borrar Tutorías
+        console.log("Eliminando tutorías...");
         await supabase.from('tutoring_sessions').delete().eq('course_id', courseId);
+
+        // 5. Borrar Inscripciones (Enrollments)
+        console.log("Eliminando inscripciones...");
+        await supabase.from('enrollments').delete().eq('course_id', courseId);
         
-        // 2. Borrar el curso
+        // 6. Finalmente, borrar el Curso
+        console.log("Eliminando curso...");
         const { error } = await supabase.from('courses').delete().eq('id', courseId);
         
         if (error) throw error;
@@ -502,10 +526,11 @@ export default function Dashboard() {
             setView('courses');
             setSelectedCourse(null);
         }
+        alert("Curso eliminado correctamente.");
         
     } catch (e: any) {
-        alert("Error crítico al eliminar: " + e.message + "\n\nAsegúrate de ejecutar el script SQL de 'ON DELETE CASCADE' en Supabase.");
-        console.error(e);
+        console.error("Error detallado:", e);
+        alert("Ocurrió un error al eliminar: " + e.message + "\nRevisa la consola para más detalles.");
     }
   }
 
@@ -685,14 +710,23 @@ export default function Dashboard() {
                                    {st.email ? st.email[0].toUpperCase() : (st.full_name ? st.full_name[0].toUpperCase() : 'U')}
                                </div>
                                <div className="flex flex-col overflow-hidden">
-                                   {/* MOSTRAR EMAIL PRIORITARIAMENTE */}
-                                   <span className="text-sm font-bold text-gray-800 dark:text-gray-200 flex items-center gap-1.5 truncate">
-                                       <Mail className="w-3 h-3 text-indigo-400"/>
-                                       {st.email || "Sin email"}
+                                   {/* CAMBIO: PRIORIZAR NOMBRE COMPLETO */}
+                                   <span className="text-sm font-bold text-gray-800 dark:text-gray-200 truncate">
+                                       {st.full_name || "Estudiante sin nombre"}
                                    </span>
-                                   <span className="text-xs text-gray-500 truncate">
-                                       {st.full_name || `ID: ${st.id.slice(0, 8)}...`}
-                                   </span>
+                                   
+                                   {/* EMAIL SECUNDARIO */}
+                                   {st.email && st.email !== 'No disponible' ? (
+                                      <span className="text-xs text-gray-500 flex items-center gap-1.5 truncate">
+                                         <Mail className="w-3 h-3 text-indigo-400"/>
+                                         {st.email}
+                                      </span>
+                                   ) : (
+                                      <span className="text-xs text-gray-500 flex items-center gap-1.5 truncate italic">
+                                         <AlertTriangle className="w-3 h-3 text-amber-500"/>
+                                         Email no disponible
+                                      </span>
+                                   )}
                                </div>
                              </div>
                            ))}
