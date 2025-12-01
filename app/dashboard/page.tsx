@@ -15,6 +15,7 @@ import {
 import { useTheme } from 'next-themes'
 
 // --- TIPOS ---
+// Agregamos explícitamente 'email' al tipo Profile
 type Profile = { id: string, role: 'student' | 'teacher', full_name: string, avatar_url?: string, email?: string }
 type CourseCategory = 'math' | 'programming' | 'letters' | 'other'
 
@@ -218,16 +219,27 @@ export default function Dashboard() {
   const fetchProfile = useCallback(async (currentUser: any) => {
     try {
       const { data, error } = await supabase.from('profiles').select('*').eq('id', currentUser.id).maybeSingle()
+      
+      // LÓGICA ROBUSTA: Siempre intentar actualizar el email en el perfil para que sea visible
+      // Esto asegura que si el usuario entra, su perfil tenga el email actualizado
+      const updates = {
+          id: currentUser.id,
+          full_name: currentUser.email, // Usamos el email como nombre por defecto para visualización rápida
+          email: currentUser.email,     // Guardamos también en campo email si existe en BD
+          role: data?.role || 'student', // Mantener rol si existe, sino student
+          updated_at: new Date().toISOString()
+      };
+
       if (!data || error) {
-        // CORRECCIÓN: Guardar el email completo como full_name para que sea visible
-        await supabase.from('profiles').upsert({
-          id: currentUser.id, 
-          full_name: currentUser.email, 
-          role: 'student'
-        })
+        // Si no existe, creamos
+        await supabase.from('profiles').upsert(updates)
         window.location.reload()
         return
+      } else {
+        // Si existe, actualizamos para asegurar que el email esté fresco
+        await supabase.from('profiles').update(updates).eq('id', currentUser.id)
       }
+
       setProfile(data)
       setLoadingProfile(false)
       fetchCourses(data.role, currentUser.id)
@@ -294,18 +306,21 @@ export default function Dashboard() {
         }
 
         const ids = enrollments.map(e => e.student_id)
+        // Intentar traer todo, incluyendo email si la columna existe en public.profiles
         const { data: profiles } = await supabase.from('profiles').select('*').in('id', ids)
         
         const validProfiles = profiles || []
         const foundIds = new Set(validProfiles.map(p => p.id))
         
+        // CORRECCIÓN: Si no encontramos el perfil (posiblemente por RLS), creamos un objeto con el ID
+        // para que al menos se muestre algo y no quede vacío.
         const placeholders: Profile[] = ids
             .filter(id => !foundIds.has(id))
             .map(id => ({ 
                 id, 
                 role: 'student', 
-                // CORRECCIÓN: Texto más claro indicando que falta registro del perfil
-                full_name: 'Pendiente de acceso...' 
+                full_name: 'Estudiante (Cargando...)',
+                email: '...' 
             }))
         
         setEnrolledStudents([...validProfiles, ...placeholders])
@@ -655,8 +670,11 @@ export default function Dashboard() {
                         <div className="max-h-96 overflow-y-auto space-y-2">
                            {enrolledStudents.map(st => (
                              <div key={st.id} className="flex items-center gap-3 p-3 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-xl transition-colors">
-                               <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 text-white flex items-center justify-center font-bold text-xs">{st.full_name?.[0] || '?'}</div>
-                               <span className="text-sm font-medium">{st.full_name}</span>
+                               <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 text-white flex items-center justify-center font-bold text-xs">{(st.email || st.full_name || '?')[0].toUpperCase()}</div>
+                               {/* CORRECCIÓN: Priorizar visualización del email */}
+                               <span className="text-sm font-medium">
+                                   {st.email || st.full_name || `ID: ${st.id.slice(0, 8)}...`}
+                               </span>
                              </div>
                            ))}
                            {!loadingStudents && enrolledStudents.length === 0 && <p className="text-gray-400 text-sm italic">Sin inscritos aún.</p>}
