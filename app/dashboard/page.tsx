@@ -10,7 +10,7 @@ import {
   Video, ExternalLink, Trash2, Edit, Users, 
   ListChecks, ArrowLeft, Terminal, X, GripVertical, 
   Check, Play, Code as CodeIcon, Calculator, Feather,
-  LogOut as LeaveIcon
+  LogOut as LeaveIcon, AlertCircle
 } from 'lucide-react'
 import { useTheme } from 'next-themes'
 
@@ -221,7 +221,6 @@ export default function Dashboard() {
       const { data, error } = await supabase.from('profiles').select('*').eq('id', currentUser.id).maybeSingle()
       
       // LÓGICA ROBUSTA: Siempre intentar actualizar el email en el perfil para que sea visible
-      // Esto asegura que si el usuario entra, su perfil tenga el email actualizado
       const updates = {
           id: currentUser.id,
           full_name: currentUser.email, // Usamos el email como nombre por defecto para visualización rápida
@@ -312,15 +311,15 @@ export default function Dashboard() {
         const validProfiles = profiles || []
         const foundIds = new Set(validProfiles.map(p => p.id))
         
-        // CORRECCIÓN: Si no encontramos el perfil (posiblemente por RLS), creamos un objeto con el ID
-        // para que al menos se muestre algo y no quede vacío.
+        // FALLBACK MEJORADO: Si no encontramos el perfil, creamos un placeholder sin los "..." 
+        // para que la interfaz muestre el ID u otro dato disponible en lugar de puntos vacíos.
         const placeholders: Profile[] = ids
             .filter(id => !foundIds.has(id))
             .map(id => ({ 
                 id, 
                 role: 'student', 
-                full_name: 'Estudiante (Cargando...)',
-                email: '...' 
+                full_name: 'Usuario sin sincronizar', // Texto explícito en lugar de cargar indefinido
+                // NO ponemos email: '...' para evitar que la UI priorice mostrar puntos suspensivos
             }))
         
         setEnrolledStudents([...validProfiles, ...placeholders])
@@ -671,7 +670,7 @@ export default function Dashboard() {
                            {enrolledStudents.map(st => (
                              <div key={st.id} className="flex items-center gap-3 p-3 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-xl transition-colors">
                                <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 text-white flex items-center justify-center font-bold text-xs">{(st.email || st.full_name || '?')[0].toUpperCase()}</div>
-                               {/* CORRECCIÓN: Priorizar visualización del email */}
+                               {/* CORRECCIÓN: Priorizar visualización del email, fallback a ID si no hay datos */}
                                <span className="text-sm font-medium">
                                    {st.email || st.full_name || `ID: ${st.id.slice(0, 8)}...`}
                                </span>
@@ -680,6 +679,12 @@ export default function Dashboard() {
                            {!loadingStudents && enrolledStudents.length === 0 && <p className="text-gray-400 text-sm italic">Sin inscritos aún.</p>}
                            {loadingStudents && <p className="text-gray-400 text-xs animate-pulse">Cargando...</p>}
                         </div>
+                        {enrolledStudents.some(s => !s.email && !s.full_name) && (
+                            <div className="mt-2 p-2 bg-blue-50 dark:bg-blue-900/20 rounded-lg flex items-start gap-2 text-xs text-blue-600 dark:text-blue-400">
+                                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5"/>
+                                <p>Nota: Los correos serán visibles cuando el estudiante inicie sesión nuevamente.</p>
+                            </div>
+                        )}
                       </div>
 
                       <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border dark:border-gray-700 flex flex-col">
