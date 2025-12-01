@@ -24,6 +24,7 @@ type Course = {
   category: CourseCategory,
   created_by: string,
   syllabus?: string,
+  is_published?: boolean,
   profiles?: { full_name: string } 
 }
 
@@ -157,6 +158,7 @@ export default function Dashboard() {
       } else {
         // Estudiante: 
         // 1. Obtener inscripciones (Mis Cursos)
+        // Nota: Asegúrate de que la relación en Supabase sea correcta. A veces se necesita especificar el nombre de la FK.
         const { data: enrollData } = await supabase.from('enrollments')
           .select('course_id, courses(*, profiles(full_name))')
           .eq('student_id', userId)
@@ -166,7 +168,9 @@ export default function Dashboard() {
         setMyCourses(enrolled)
         
         // 2. Obtener todos los cursos disponibles para "Explorar"
-        const { data: allData } = await supabase.from('courses').select('*, profiles(full_name)').eq('is_published', true)
+        // CORRECCIÓN: Eliminado .eq('is_published', true) para que se vean todos los cursos,
+        // ya que los antiguos podrían no tener este flag set a true.
+        const { data: allData } = await supabase.from('courses').select('*, profiles(full_name)')
         
         // Filtramos los que YA estoy inscrito para que no salgan duplicados en Explorar (opcional)
         const enrolledIds = new Set(enrolled.map((c: any) => c.id))
@@ -379,7 +383,7 @@ export default function Dashboard() {
   const createOrUpdateCourse = async () => {
     const payload = { title: newCourseTitle, description: newCourseDesc, category: newCourseCategory }
     if (editingCourseId) await supabase.from('courses').update(payload).eq('id', editingCourseId)
-    else await supabase.from('courses').insert({ ...payload, created_by: user.id })
+    else await supabase.from('courses').insert({ ...payload, created_by: user.id, is_published: true }) // CORRECCIÓN: Forzar is_published: true
     setNewCourseTitle(''); setNewCourseDesc(''); setEditingCourseId(null); setView('courses'); fetchCourses('teacher', user.id)
   }
   
@@ -459,14 +463,14 @@ export default function Dashboard() {
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {myCourses.map(c => (
                   <div key={c.id} onClick={() => { setSelectedCourse(c); setView('course_detail'); fetchChatHistory(c.id); fetchSessions(c.id); if(profile?.role==='teacher') {fetchEnrolledStudents(c.id); try { const parsed = JSON.parse(c.syllabus || '[]'); setSyllabusItems(Array.isArray(parsed) ? parsed : []); } catch { setSyllabusItems([]); }} }}
-                       className="group bg-white dark:bg-gray-800 rounded-2xl border dark:border-gray-700 overflow-hidden cursor-pointer hover:shadow-2xl hover:-translate-y-1 transition-all duration-300">
+                        className="group bg-white dark:bg-gray-800 rounded-2xl border dark:border-gray-700 overflow-hidden cursor-pointer hover:shadow-2xl hover:-translate-y-1 transition-all duration-300">
                     <div className={`h-36 p-6 flex flex-col justify-between relative overflow-hidden
                       ${c.category === 'math' ? 'bg-gradient-to-br from-blue-600 to-cyan-500' : 
                         c.category === 'programming' ? 'bg-gradient-to-br from-slate-800 to-black' : 
                         c.category === 'letters' ? 'bg-gradient-to-br from-amber-600 to-orange-500' : 
                         'bg-gradient-to-br from-indigo-600 to-violet-600'}`}>
                          <div className="absolute top-0 right-0 p-4 opacity-10 transform translate-x-4 -translate-y-4">
-                            {c.category === 'math' ? <Calculator size={100} color="white"/> : c.category === 'programming' ? <Terminal size={100} color="white"/> : c.category === 'letters' ? <Feather size={100} color="white"/> : <Book size={100} color="white"/>}
+                           {c.category === 'math' ? <Calculator size={100} color="white"/> : c.category === 'programming' ? <Terminal size={100} color="white"/> : c.category === 'letters' ? <Feather size={100} color="white"/> : <Book size={100} color="white"/>}
                          </div>
                          <span className="self-end bg-white/20 backdrop-blur text-white text-[10px] px-2 py-0.5 rounded-full uppercase font-bold tracking-wider border border-white/10">{c.category}</span>
                          <h3 className="text-white font-bold text-xl drop-shadow-md z-10">{c.title}</h3>
@@ -556,7 +560,7 @@ export default function Dashboard() {
                           <div key={i} className={`flex flex-col w-full max-w-3xl mx-auto ${msg.role === 'user' ? 'items-end' : 'items-start'} animate-in slide-in-from-bottom-4 fade-in duration-500`}>
                              <div className={`flex gap-3 max-w-[95%] md:max-w-[85%] ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
                                 <div className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center shadow-sm mt-1 ${msg.role === 'user' ? 'bg-indigo-600' : 'bg-emerald-500'}`}>
-                                   {msg.role === 'user' ? <User className="w-4 h-4 text-white"/> : <Bot className="w-4 h-4 text-white"/>}
+                                    {msg.role === 'user' ? <User className="w-4 h-4 text-white"/> : <Bot className="w-4 h-4 text-white"/>}
                                 </div>
                                 <div className="flex flex-col gap-2 w-full">
                                    <div className={`p-4 md:p-5 rounded-2xl shadow-sm leading-relaxed text-[15px] ${
@@ -570,12 +574,12 @@ export default function Dashboard() {
                                    {/* BOTONES DE OPCIONES (INTERACTIVOS) */}
                                    {msg.options && (
                                      <div className="flex flex-wrap gap-2 mt-1 animate-in fade-in zoom-in duration-300">
-                                       {msg.options.map((opt, idx) => (
-                                          <button key={idx} onClick={() => handleSendMessage(opt)} 
-                                            className="px-4 py-2 bg-white dark:bg-gray-800 border-2 border-indigo-100 dark:border-indigo-900/40 text-indigo-600 dark:text-indigo-400 rounded-xl text-sm font-bold shadow-sm hover:bg-indigo-50 dark:hover:bg-indigo-900/20 hover:border-indigo-300 transition-all transform hover:-translate-y-0.5 active:scale-95">
-                                            {opt}
-                                          </button>
-                                       ))}
+                                        {msg.options.map((opt, idx) => (
+                                           <button key={idx} onClick={() => handleSendMessage(opt)} 
+                                             className="px-4 py-2 bg-white dark:bg-gray-800 border-2 border-indigo-100 dark:border-indigo-900/40 text-indigo-600 dark:text-indigo-400 rounded-xl text-sm font-bold shadow-sm hover:bg-indigo-50 dark:hover:bg-indigo-900/20 hover:border-indigo-300 transition-all transform hover:-translate-y-0.5 active:scale-95">
+                                               {opt}
+                                           </button>
+                                        ))}
                                      </div>
                                    )}
 
@@ -583,8 +587,8 @@ export default function Dashboard() {
                                    {msg.isCodeRequest && (
                                      <div className="mt-2 w-full rounded-xl overflow-hidden border border-gray-700 shadow-2xl bg-[#1e1e1e] ring-4 ring-gray-900/5">
                                         <div className="flex items-center justify-between px-4 py-2 bg-[#252526] border-b border-[#333]">
-                                           <span className="text-xs font-bold text-gray-400 flex items-center gap-2"><CodeIcon className="w-3 h-3 text-blue-400"/> EDITOR DEL ESTUDIANTE</span>
-                                           <div className="flex gap-1.5"><div className="w-2.5 h-2.5 rounded-full bg-red-500"/><div className="w-2.5 h-2.5 rounded-full bg-yellow-500"/><div className="w-2.5 h-2.5 rounded-full bg-green-500"/></div>
+                                            <span className="text-xs font-bold text-gray-400 flex items-center gap-2"><CodeIcon className="w-3 h-3 text-blue-400"/> EDITOR DEL ESTUDIANTE</span>
+                                            <div className="flex gap-1.5"><div className="w-2.5 h-2.5 rounded-full bg-red-500"/><div className="w-2.5 h-2.5 rounded-full bg-yellow-500"/><div className="w-2.5 h-2.5 rounded-full bg-green-500"/></div>
                                         </div>
                                         <div className="relative">
                                            <textarea 
@@ -681,35 +685,35 @@ export default function Dashboard() {
 
                 {profile?.role === 'teacher' ? (
                   <div className="space-y-6 max-w-lg mx-auto">
-                     <div>
-                       <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Título del Curso</label>
-                       <input value={newCourseTitle} onChange={e => setNewCourseTitle(e.target.value)} className="w-full px-4 py-3 rounded-xl border dark:bg-gray-900 dark:border-gray-700 focus:ring-2 focus:ring-indigo-500 outline-none transition-shadow" placeholder="Ej: Cálculo Avanzado I"/>
-                     </div>
-                     <div>
-                       <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Categoría</label>
-                       <div className="grid grid-cols-2 gap-3">
-                         {['math', 'programming', 'letters', 'other'].map((cat: any) => (
-                           <button key={cat} onClick={() => setNewCourseCategory(cat)} className={`p-3 rounded-xl border text-sm font-bold capitalize transition-all flex items-center justify-center gap-2 ${newCourseCategory === cat ? 'bg-indigo-600 text-white border-indigo-600 ring-2 ring-indigo-200' : 'hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
-                              {cat === 'math' ? <Calculator className="w-4 h-4"/> : cat === 'programming' ? <Terminal className="w-4 h-4"/> : cat === 'letters' ? <Feather className="w-4 h-4"/> : <Book className="w-4 h-4"/>}
-                              {cat === 'math' ? 'Matemáticas' : cat === 'letters' ? 'Letras' : cat === 'programming' ? 'Programación' : 'Otros'}
-                           </button>
-                         ))}
-                       </div>
-                     </div>
-                     <div>
-                       <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Descripción</label>
-                       <textarea value={newCourseDesc} onChange={e => setNewCourseDesc(e.target.value)} className="w-full px-4 py-3 rounded-xl border h-32 resize-none dark:bg-gray-900 dark:border-gray-700 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="¿De qué trata este curso?"/>
-                     </div>
-                     <button onClick={createOrUpdateCourse} disabled={!newCourseTitle || !newCourseDesc} className="w-full py-4 bg-indigo-600 text-white rounded-xl font-bold text-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-xl shadow-indigo-500/20 transition-all transform hover:scale-[1.02]">
-                        {editingCourseId ? 'Guardar Cambios' : 'Publicar Curso'}
-                     </button>
+                      <div>
+                        <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Título del Curso</label>
+                        <input value={newCourseTitle} onChange={e => setNewCourseTitle(e.target.value)} className="w-full px-4 py-3 rounded-xl border dark:bg-gray-900 dark:border-gray-700 focus:ring-2 focus:ring-indigo-500 outline-none transition-shadow" placeholder="Ej: Cálculo Avanzado I"/>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Categoría</label>
+                        <div className="grid grid-cols-2 gap-3">
+                          {['math', 'programming', 'letters', 'other'].map((cat: any) => (
+                            <button key={cat} onClick={() => setNewCourseCategory(cat)} className={`p-3 rounded-xl border text-sm font-bold capitalize transition-all flex items-center justify-center gap-2 ${newCourseCategory === cat ? 'bg-indigo-600 text-white border-indigo-600 ring-2 ring-indigo-200' : 'hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
+                               {cat === 'math' ? <Calculator className="w-4 h-4"/> : cat === 'programming' ? <Terminal className="w-4 h-4"/> : cat === 'letters' ? <Feather className="w-4 h-4"/> : <Book className="w-4 h-4"/>}
+                               {cat === 'math' ? 'Matemáticas' : cat === 'letters' ? 'Letras' : cat === 'programming' ? 'Programación' : 'Otros'}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Descripción</label>
+                        <textarea value={newCourseDesc} onChange={e => setNewCourseDesc(e.target.value)} className="w-full px-4 py-3 rounded-xl border h-32 resize-none dark:bg-gray-900 dark:border-gray-700 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="¿De qué trata este curso?"/>
+                      </div>
+                      <button onClick={createOrUpdateCourse} disabled={!newCourseTitle || !newCourseDesc} className="w-full py-4 bg-indigo-600 text-white rounded-xl font-bold text-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-xl shadow-indigo-500/20 transition-all transform hover:scale-[1.02]">
+                         {editingCourseId ? 'Guardar Cambios' : 'Publicar Curso'}
+                      </button>
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                     {courses.length === 0 && <div className="col-span-2 text-center py-10 text-gray-400 italic">No hay nuevos cursos disponibles por ahora.</div>}
-                     {courses.map(c => (
-                        <div key={c.id} className="border dark:border-gray-700 p-5 rounded-2xl hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-all flex justify-between items-center group">
-                           <div>
+                      {courses.length === 0 && <div className="col-span-2 text-center py-10 text-gray-400 italic">No hay nuevos cursos disponibles por ahora.</div>}
+                      {courses.map(c => (
+                         <div key={c.id} className="border dark:border-gray-700 p-5 rounded-2xl hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-all flex justify-between items-center group">
+                            <div>
                               <div className="flex items-center gap-2 mb-1">
                                 <span className={`w-2 h-2 rounded-full ${c.category === 'math' ? 'bg-blue-500' : c.category === 'programming' ? 'bg-black dark:bg-white' : c.category === 'letters' ? 'bg-amber-500' : 'bg-indigo-500'}`}></span>
                                 <span className="text-xs uppercase font-bold text-gray-400 tracking-wide">{c.category}</span>
@@ -717,17 +721,17 @@ export default function Dashboard() {
                               <h3 className="font-bold text-lg dark:text-white group-hover:text-indigo-600 transition-colors">{c.title}</h3>
                               <p className="text-sm text-gray-500 line-clamp-1 max-w-[250px]">{c.description}</p>
                               <p className="text-xs text-gray-400 mt-2 flex items-center gap-1"><User className="w-3 h-3"/> {c.profiles?.full_name}</p>
-                           </div>
-                           <button onClick={async () => {
+                            </div>
+                            <button onClick={async () => {
                               try {
                                 const { error } = await supabase.from('enrollments').insert({ student_id: user.id, course_id: c.id });
                                 if (error) throw error;
                                 fetchCourses('student', user.id); 
                                 setView('courses');
                               } catch(e: any) { alert("Error al inscribirse: " + e.message) }
-                           }} className="px-5 py-2.5 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400 rounded-xl font-bold text-sm hover:bg-indigo-600 hover:text-white transition-all shadow-sm">Inscribirse</button>
-                        </div>
-                     ))}
+                            }} className="px-5 py-2.5 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400 rounded-xl font-bold text-sm hover:bg-indigo-600 hover:text-white transition-all shadow-sm">Inscribirse</button>
+                         </div>
+                      ))}
                   </div>
                 )}
              </div>
