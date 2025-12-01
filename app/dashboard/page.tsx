@@ -15,7 +15,7 @@ import {
 import { useTheme } from 'next-themes'
 
 // --- TIPOS ---
-type Profile = { id: string, role: 'student' | 'teacher', full_name: string, avatar_url?: string }
+type Profile = { id: string, role: 'student' | 'teacher', full_name: string, avatar_url?: string, email?: string }
 type CourseCategory = 'math' | 'programming' | 'letters' | 'other'
 
 type Course = { 
@@ -219,8 +219,11 @@ export default function Dashboard() {
     try {
       const { data, error } = await supabase.from('profiles').select('*').eq('id', currentUser.id).maybeSingle()
       if (!data || error) {
+        // CORRECCIÓN: Guardar el email completo como full_name para que sea visible
         await supabase.from('profiles').upsert({
-          id: currentUser.id, full_name: currentUser.email?.split('@')[0] || 'Estudiante', role: 'student'
+          id: currentUser.id, 
+          full_name: currentUser.email, 
+          role: 'student'
         })
         window.location.reload()
         return
@@ -298,7 +301,12 @@ export default function Dashboard() {
         
         const placeholders: Profile[] = ids
             .filter(id => !foundIds.has(id))
-            .map(id => ({ id, role: 'student', full_name: 'Estudiante Registrado' }))
+            .map(id => ({ 
+                id, 
+                role: 'student', 
+                // CORRECCIÓN: Texto más claro indicando que falta registro del perfil
+                full_name: 'Pendiente de acceso...' 
+            }))
         
         setEnrolledStudents([...validProfiles, ...placeholders])
     } catch (e) { console.error("Error fetching students:", e) 
