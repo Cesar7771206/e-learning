@@ -42,7 +42,7 @@ type Message = {
   role: 'user' | 'model', 
   content: string, 
   timestamp?: Date,
-  options?: string[], // Opciones extraídas
+  options?: string[],
   isCodeRequest?: boolean 
 }
 
@@ -291,13 +291,14 @@ export default function Dashboard() {
         const validProfiles = profiles || []
         const foundIds = new Set(validProfiles.map(p => p.id))
         
+        // Fallback visual robusto
         const placeholders: Profile[] = ids
             .filter(id => !foundIds.has(id))
             .map(id => ({ 
                 id, 
                 role: 'student', 
-                full_name: 'Estudiante (ID)', 
-                email: id // Usamos ID como fallback visual
+                full_name: '', 
+                email: id // Usar ID como email temporal
             }))
         
         setEnrolledStudents([...validProfiles, ...placeholders])
@@ -438,34 +439,51 @@ export default function Dashboard() {
     
     try {
         if (editingCourseId) {
+            // Actualización
             const { error } = await supabase.from('courses').update(payload).eq('id', editingCourseId);
             if (error) throw error;
+            
+            // Actualizar estado local inmediatamente
+            setMyCourses(prev => prev.map(c => c.id === editingCourseId ? { ...c, ...payload } : c));
+            if (selectedCourse?.id === editingCourseId) {
+                setSelectedCourse({ ...selectedCourse, ...payload });
+            }
         } else {
+            // Creación
             const { error } = await supabase.from('courses').insert({ ...payload, created_by: user.id, is_published: true });
             if (error) throw error;
+            fetchCourses('teacher', user.id); // Recargar lista para obtener ID nuevo
         }
         
-        resetForm(); // Limpiar formulario tras éxito
+        resetForm();
         setView('courses');
-        fetchCourses('teacher', user.id);
     } catch (e: any) {
         alert("Error al guardar: " + e.message);
     }
   }
 
-  // CORRECCIÓN: Borrado en Cascada Manual
+  // ELIMINACIÓN EN CASCADA (Soluciona el error de FK)
   const handleDeleteCourse = async (courseId: number, e: React.MouseEvent) => {
     e.stopPropagation();
     if(!confirm("ADVERTENCIA: Esto borrará TODOS los datos del curso (estudiantes, chats, sesiones). ¿Estás seguro?")) return;
     
     try {
-        // 1. Borrar inscripciones
-        await supabase.from('enrollments').delete().eq('course_id', courseId);
-        // 2. Borrar sesiones
-        await supabase.from('sessions').delete().eq('course_id', courseId);
-        // 3. Borrar chats
+        // 1. Obtener sesiones AI para borrar sus mensajes
+        const { data: aiSessions } = await supabase.from('ai_sessions').select('id').eq('course_id', courseId);
+        const aiSessionIds = aiSessions?.map(s => s.id) || [];
+
+        if (aiSessionIds.length > 0) {
+            await supabase.from('ai_messages').delete().in('session_id', aiSessionIds);
+            await supabase.from('ai_sessions').delete().eq('course_id', courseId);
+        }
+
+        // 2. Borrar todo lo demás
         await supabase.from('chat_messages').delete().eq('course_id', courseId);
-        // 4. Finalmente borrar el curso
+        await supabase.from('enrollments').delete().eq('course_id', courseId);
+        await supabase.from('sessions').delete().eq('course_id', courseId);
+        await supabase.from('tutoring_sessions').delete().eq('course_id', courseId);
+        
+        // 3. Finalmente borrar el curso
         const { error } = await supabase.from('courses').delete().eq('id', courseId);
         
         if (error) throw error;
@@ -476,6 +494,7 @@ export default function Dashboard() {
         
     } catch (e: any) {
         alert("Error crítico al eliminar: " + e.message);
+        console.error(e);
     }
   }
 
@@ -487,15 +506,12 @@ export default function Dashboard() {
     else { setView('courses'); fetchCourses('student', user.id); }
   }
 
-  // CORRECCIÓN: Edición limpia
   const handleEditCourse = (course: Course, e: React.MouseEvent) => {
     e.stopPropagation();
-    // Establecer valores para edición
     setNewCourseTitle(course.title);
     setNewCourseDesc(course.description);
     setNewCourseCategory(course.category);
     setEditingCourseId(course.id);
-    // Cambiar vista
     setView('create');
   }
   
@@ -653,9 +669,11 @@ export default function Dashboard() {
                         <div className="max-h-96 overflow-y-auto space-y-2">
                            {enrolledStudents.map(st => (
                              <div key={st.id} className="flex items-center gap-3 p-3 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-xl transition-colors">
-                               <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 text-white flex items-center justify-center font-bold text-xs">{(st.email || st.full_name || 'U')[0].toUpperCase()}</div>
+                               <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 text-white flex items-center justify-center font-bold text-xs">{st.email ? st.email[0].toUpperCase() : (st.full_name ? st.full_name[0].toUpperCase() : 'U')}</div>
                                <span className="text-sm font-medium">
-                                   {st.email || st.full_name || `ID: ${st.id.slice(0, 8)}...`}
+                                   {st.email && st.email.trim() !== '' ? st.email : 
+                                    (st.full_name && st.full_name.trim() !== '' ? st.full_name : 
+                                    `ID: ${st.id.slice(0, 8)}...`)}
                                </span>
                              </div>
                            ))}
@@ -665,7 +683,7 @@ export default function Dashboard() {
                         {enrolledStudents.some(s => !s.email && !s.full_name) && (
                             <div className="mt-2 p-2 bg-blue-50 dark:bg-blue-900/20 rounded-lg flex items-start gap-2 text-xs text-blue-600 dark:text-blue-400">
                                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5"/>
-                                <p>Nota: Los correos serán visibles cuando el estudiante inicie sesión.</p>
+                                <p>Nota: Algunos perfiles no son públicos. Los estudiantes deben iniciar sesión.</p>
                             </div>
                         )}
                       </div>
