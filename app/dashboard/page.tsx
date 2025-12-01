@@ -1,9 +1,9 @@
 'use client'
 
 import { useEffect, useState, useRef, useCallback } from 'react'
-import { supabase } from '@/lib/supabase'
+import { supabase } from '@/lib/supabase' // Asegúrate de que esta ruta sea correcta en tu proyecto
 import { useRouter } from 'next/navigation'
-import { chatWithGemini } from '../actions'
+import { chatWithGemini } from '../actions' // Asegúrate de que esta ruta sea correcta
 import { 
   LogOut, Plus, Book, User, Send, Bot, 
   GraduationCap, Sun, Moon, Search, RefreshCw, 
@@ -206,9 +206,7 @@ export default function Dashboard() {
       
       const updates = {
           id: currentUser.id,
-          // Intentamos guardar el email real si existe en auth
           email: currentUser.email,     
-          // Si no tiene full_name, usamos el email
           full_name: data?.full_name || currentUser.email?.split('@')[0],
           role: data?.role || 'student', 
           updated_at: new Date().toISOString()
@@ -219,7 +217,6 @@ export default function Dashboard() {
         window.location.reload()
         return
       } else {
-        // Actualizamos el perfil para asegurar que el email esté sincronizado
         await supabase.from('profiles').update({ email: currentUser.email }).eq('id', currentUser.id)
       }
 
@@ -276,40 +273,46 @@ export default function Dashboard() {
     } catch (e) { console.error("Error fetching courses:", e) }
   }
 
-  // --- GESTIÓN DE ESTUDIANTES (CORREGIDO) ---
+  // --- SOLUCIÓN 1: GESTIÓN DE ESTUDIANTES (RELACIONAL) ---
+  // Usamos un Join de Supabase para traer los perfiles directamente
   const fetchEnrolledStudents = async (courseId: number) => {
     setLoadingStudents(true)
     try {
-        // 1. Obtener IDs de inscripciones
-        const { data: enrollments } = await supabase.from('enrollments').select('student_id').eq('course_id', courseId)
-        
-        if (!enrollments || enrollments.length === 0) { 
-            setEnrolledStudents([]); 
-            setLoadingStudents(false)
-            return 
-        }
-
-        const ids = enrollments.map(e => e.student_id)
-        
-        // 2. Obtener perfiles de esos IDs
-        const { data: profiles, error } = await supabase.from('profiles').select('*').in('id', ids)
+        // Obtenemos los enrollments Y el perfil asociado en una sola query
+        // Esto soluciona el problema de "Estudiante Desconocido"
+        const { data, error } = await supabase
+            .from('enrollments')
+            .select(`
+                student_id,
+                profiles:student_id (
+                    id,
+                    full_name,
+                    email,
+                    role,
+                    avatar_url
+                )
+            `)
+            .eq('course_id', courseId)
         
         if (error) throw error;
         
-        // 3. Mezclar datos. Si el perfil no existe (raro), creamos un objeto dummy para que no falle.
-        // Importante: No usamos "placeholders" de carga, mostramos lo que hay.
-        const finalStudents = ids.map(id => {
-            const found = profiles?.find(p => p.id === id);
-            if (found) return found;
-            return {
-                id,
-                role: 'student',
-                full_name: 'Estudiante Desconocido',
-                email: 'No disponible'
-            } as Profile;
-        })
-
-        setEnrolledStudents(finalStudents)
+        if (!data || data.length === 0) { 
+            setEnrolledStudents([]); 
+        } else {
+            // Mapeamos la respuesta para extraer el perfil anidado
+            // @ts-ignore: Supabase types inference can be tricky with nested joins
+            const students = data.map(item => {
+                if (item.profiles) return item.profiles;
+                // Fallback si hay enrollment pero el perfil fue borrado (raro)
+                return {
+                    id: item.student_id,
+                    full_name: 'Perfil no encontrado',
+                    email: 'Desconocido',
+                    role: 'student'
+                }
+            });
+            setEnrolledStudents(students);
+        }
 
     } catch (e) { 
         console.error("Error fetching students:", e) 
@@ -443,7 +446,7 @@ export default function Dashboard() {
     return fmt;
   }
 
-  // --- ACCIONES CRUD MEJORADAS (SOLUCIÓN A TU ERROR) ---
+  // --- ACCIONES CRUD MEJORADAS ---
   
   const createOrUpdateCourse = async () => {
     if (!user) return;
@@ -477,45 +480,55 @@ export default function Dashboard() {
     }
   }
 
-  // --- ELIMINACIÓN DE CURSO "FUERZA BRUTA" ---
-  // Esta función elimina manualmente todos los registros dependientes 
-  // para evitar errores de Foreign Key si la BD no tiene ON DELETE CASCADE configurado.
+  // --- SOLUCIÓN 2: ELIMINACIÓN DE CURSO ROBUSTA ---
+  // Esta función elimina en cascada manualmente para asegurar persistencia
   const handleDeleteCourse = async (courseId: number, e: React.MouseEvent) => {
     e.stopPropagation();
     if(!confirm("⚠️ ADVERTENCIA: ¿Estás seguro de eliminar este curso?\nSe borrarán permanentemente todos los estudiantes inscritos, chats, sesiones y tareas.")) return;
     
     try {
-        // 1. Obtener Sesiones de IA para borrar sus mensajes primero
-        const { data: aiSessions } = await supabase.from('ai_sessions').select('id').eq('course_id', courseId);
+        // 1. Obtener Sesiones de IA (necesario para borrar mensajes hijos)
+        const { data: aiSessions, error: aiError } = await supabase.from('ai_sessions').select('id').eq('course_id', courseId);
+        if (aiError) console.warn("Error al obtener sesiones AI, continuando...", aiError);
+
         const aiSessionIds = aiSessions?.map(s => s.id) || [];
+        
+        // 2. Borrar Mensajes de IA (Hijos de ai_sessions)
         if (aiSessionIds.length > 0) {
             console.log("Eliminando mensajes de IA...");
-            await supabase.from('ai_messages').delete().in('session_id', aiSessionIds);
-            console.log("Eliminando sesiones de IA...");
-            await supabase.from('ai_sessions').delete().eq('course_id', courseId);
+            const { error } = await supabase.from('ai_messages').delete().in('session_id', aiSessionIds);
+            if (error) throw new Error("Error borrando mensajes IA: " + error.message);
         }
 
-        // 2. Borrar Mensajes del Chat General
+        // 3. Borrar Sesiones de IA (Padres)
+        console.log("Eliminando sesiones de IA...");
+        const { error: errorAiSess } = await supabase.from('ai_sessions').delete().eq('course_id', courseId);
+        if (errorAiSess) throw new Error("Error borrando sesiones IA: " + errorAiSess.message);
+
+        // 4. Borrar Mensajes del Chat General
         console.log("Eliminando chat del curso...");
-        await supabase.from('chat_messages').delete().eq('course_id', courseId);
+        const { error: errorChat } = await supabase.from('chat_messages').delete().eq('course_id', courseId);
+        if (errorChat) throw new Error("Error borrando chat: " + errorChat.message);
 
-        // 3. Borrar Sesiones en Vivo
+        // 5. Borrar Sesiones en Vivo
         console.log("Eliminando sesiones en vivo...");
-        await supabase.from('sessions').delete().eq('course_id', courseId);
+        const { error: errorLive } = await supabase.from('sessions').delete().eq('course_id', courseId);
+        if (errorLive) throw new Error("Error borrando sesiones vivo: " + errorLive.message);
 
-        // 4. Borrar Tutorías
+        // 6. Borrar Tutorías
         console.log("Eliminando tutorías...");
-        await supabase.from('tutoring_sessions').delete().eq('course_id', courseId);
+        const { error: errorTut } = await supabase.from('tutoring_sessions').delete().eq('course_id', courseId);
+        if (errorTut) throw new Error("Error borrando tutorías: " + errorTut.message);
 
-        // 5. Borrar Inscripciones (Enrollments)
+        // 7. Borrar Inscripciones (Enrollments)
         console.log("Eliminando inscripciones...");
-        await supabase.from('enrollments').delete().eq('course_id', courseId);
+        const { error: errorEnroll } = await supabase.from('enrollments').delete().eq('course_id', courseId);
+        if (errorEnroll) throw new Error("Error borrando inscripciones: " + errorEnroll.message);
         
-        // 6. Finalmente, borrar el Curso
+        // 8. Finalmente, borrar el Curso
         console.log("Eliminando curso...");
-        const { error } = await supabase.from('courses').delete().eq('id', courseId);
-        
-        if (error) throw error;
+        const { error: errorCourse } = await supabase.from('courses').delete().eq('id', courseId);
+        if (errorCourse) throw new Error("Error borrando curso final: " + errorCourse.message);
         
         // Actualizar UI
         setMyCourses(prev => prev.filter(c => c.id !== courseId));
@@ -530,7 +543,7 @@ export default function Dashboard() {
         
     } catch (e: any) {
         console.error("Error detallado:", e);
-        alert("Ocurrió un error al eliminar: " + e.message + "\nRevisa la consola para más detalles.");
+        alert("Ocurrió un error al eliminar: " + e.message + "\n\nIntenta recargar la página.");
     }
   }
 
@@ -939,7 +952,7 @@ export default function Dashboard() {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {courses.length === 0 && <div className="col-span-2 text-center py-10 text-gray-400 italic">No hay nuevos cursos disponibles por ahora.</div>}
                       {courses.map(c => (
-                         <div key={c.id} className="border dark:border-gray-700 p-5 rounded-2xl hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-all flex justify-between items-center group">
+                          <div key={c.id} className="border dark:border-gray-700 p-5 rounded-2xl hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-all flex justify-between items-center group">
                             <div>
                               <div className="flex items-center gap-2 mb-1">
                                 <span className={`w-2 h-2 rounded-full ${c.category === 'math' ? 'bg-blue-500' : c.category === 'programming' ? 'bg-black dark:bg-white' : c.category === 'letters' ? 'bg-amber-500' : 'bg-indigo-500'}`}></span>
@@ -957,7 +970,7 @@ export default function Dashboard() {
                                 setView('courses');
                               } catch(e: any) { alert("Error al inscribirse: " + e.message) }
                             }} className="px-5 py-2.5 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400 rounded-xl font-bold text-sm hover:bg-indigo-600 hover:text-white transition-all shadow-sm">Inscribirse</button>
-                         </div>
+                          </div>
                       ))}
                   </div>
                 )}
