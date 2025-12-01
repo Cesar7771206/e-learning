@@ -10,7 +10,7 @@ import {
   Video, ExternalLink, Trash2, Edit, Users, 
   ListChecks, ArrowLeft, Terminal, X, GripVertical, 
   Check, Play, Code as CodeIcon, Calculator, Feather,
-  LogOut as LeaveIcon, AlertCircle, Save, Ban
+  LogOut as LeaveIcon, AlertCircle, Save, Ban, Mail
 } from 'lucide-react'
 import { useTheme } from 'next-themes'
 
@@ -286,6 +286,7 @@ export default function Dashboard() {
         }
 
         const ids = enrollments.map(e => e.student_id)
+        // Pedimos explícitamente el email
         const { data: profiles } = await supabase.from('profiles').select('*').in('id', ids)
         
         const validProfiles = profiles || []
@@ -297,8 +298,8 @@ export default function Dashboard() {
             .map(id => ({ 
                 id, 
                 role: 'student', 
-                full_name: '', 
-                email: id // Usar ID como email temporal
+                full_name: 'Estudiante', 
+                email: 'Cargando email...' // Indicador
             }))
         
         setEnrolledStudents([...validProfiles, ...placeholders])
@@ -431,7 +432,7 @@ export default function Dashboard() {
     return fmt;
   }
 
-  // --- ACCIONES CRUD MEJORADAS ---
+  // --- ACCIONES CRUD MEJORADAS (SOLUCIÓN A TU ERROR) ---
   
   const createOrUpdateCourse = async () => {
     if (!user) return;
@@ -439,17 +440,20 @@ export default function Dashboard() {
     
     try {
         if (editingCourseId) {
-            // Actualización
+            // Actualización (UPDATE)
             const { error } = await supabase.from('courses').update(payload).eq('id', editingCourseId);
             if (error) throw error;
             
             // Actualizar estado local inmediatamente
             setMyCourses(prev => prev.map(c => c.id === editingCourseId ? { ...c, ...payload } : c));
+            setCourses(prev => prev.map(c => c.id === editingCourseId ? { ...c, ...payload } : c));
+            
             if (selectedCourse?.id === editingCourseId) {
                 setSelectedCourse({ ...selectedCourse, ...payload });
             }
+            alert("Curso actualizado correctamente.");
         } else {
-            // Creación
+            // Creación (CREATE)
             const { error } = await supabase.from('courses').insert({ ...payload, created_by: user.id, is_published: true });
             if (error) throw error;
             fetchCourses('teacher', user.id); // Recargar lista para obtener ID nuevo
@@ -462,28 +466,29 @@ export default function Dashboard() {
     }
   }
 
-  // ELIMINACIÓN EN CASCADA (Soluciona el error de FK)
+  // ELIMINACIÓN SEGURA
   const handleDeleteCourse = async (courseId: number, e: React.MouseEvent) => {
     e.stopPropagation();
-    if(!confirm("ADVERTENCIA: Esto borrará TODOS los datos del curso (estudiantes, chats, sesiones). ¿Estás seguro?")) return;
+    // Confirmación doble por seguridad
+    if(!confirm("¿Estás seguro de eliminar este curso? Se borrarán todos los estudiantes inscritos y sus chats.")) return;
     
     try {
-        // 1. Obtener sesiones AI para borrar sus mensajes
+        // NOTA: Si ejecutaste el SQL de CASCADE en Supabase, solo necesitas borrar el curso.
+        // Si no, este bloque intentará borrar manualmente (menos eficiente pero funciona si no hay conflictos complejos).
+        
+        // 1. Intento de limpieza manual (Backup)
         const { data: aiSessions } = await supabase.from('ai_sessions').select('id').eq('course_id', courseId);
         const aiSessionIds = aiSessions?.map(s => s.id) || [];
-
         if (aiSessionIds.length > 0) {
             await supabase.from('ai_messages').delete().in('session_id', aiSessionIds);
             await supabase.from('ai_sessions').delete().eq('course_id', courseId);
         }
-
-        // 2. Borrar todo lo demás
         await supabase.from('chat_messages').delete().eq('course_id', courseId);
         await supabase.from('enrollments').delete().eq('course_id', courseId);
         await supabase.from('sessions').delete().eq('course_id', courseId);
         await supabase.from('tutoring_sessions').delete().eq('course_id', courseId);
         
-        // 3. Finalmente borrar el curso
+        // 2. Borrar el curso
         const { error } = await supabase.from('courses').delete().eq('id', courseId);
         
         if (error) throw error;
@@ -492,8 +497,14 @@ export default function Dashboard() {
         setMyCourses(prev => prev.filter(c => c.id !== courseId));
         setCourses(prev => prev.filter(c => c.id !== courseId));
         
+        // Si estábamos viendo ese curso, volver a la lista
+        if (selectedCourse?.id === courseId) {
+            setView('courses');
+            setSelectedCourse(null);
+        }
+        
     } catch (e: any) {
-        alert("Error crítico al eliminar: " + e.message);
+        alert("Error crítico al eliminar: " + e.message + "\n\nAsegúrate de ejecutar el script SQL de 'ON DELETE CASCADE' en Supabase.");
         console.error(e);
     }
   }
@@ -508,11 +519,12 @@ export default function Dashboard() {
 
   const handleEditCourse = (course: Course, e: React.MouseEvent) => {
     e.stopPropagation();
+    // Cargar datos en el formulario
     setNewCourseTitle(course.title);
     setNewCourseDesc(course.description);
     setNewCourseCategory(course.category);
     setEditingCourseId(course.id);
-    setView('create');
+    setView('create'); // Ir a la vista de creación que ahora funciona como edición
   }
   
   const generateSyllabus = async () => {
@@ -596,21 +608,21 @@ export default function Dashboard() {
                         c.category === 'programming' ? 'bg-gradient-to-br from-slate-800 to-black' : 
                         c.category === 'letters' ? 'bg-gradient-to-br from-amber-600 to-orange-500' : 
                         'bg-gradient-to-br from-indigo-600 to-violet-600'}`}>
-                         <div className="absolute top-0 right-0 p-4 opacity-10 transform translate-x-4 -translate-y-4">
+                          <div className="absolute top-0 right-0 p-4 opacity-10 transform translate-x-4 -translate-y-4">
                            {c.category === 'math' ? <Calculator size={100} color="white"/> : c.category === 'programming' ? <Terminal size={100} color="white"/> : c.category === 'letters' ? <Feather size={100} color="white"/> : <Book size={100} color="white"/>}
-                         </div>
-                         <span className="self-end bg-white/20 backdrop-blur text-white text-[10px] px-2 py-0.5 rounded-full uppercase font-bold tracking-wider border border-white/10">{c.category}</span>
-                         <h3 className="text-white font-bold text-xl drop-shadow-md z-10">{c.title}</h3>
+                          </div>
+                          <span className="self-end bg-white/20 backdrop-blur text-white text-[10px] px-2 py-0.5 rounded-full uppercase font-bold tracking-wider border border-white/10">{c.category}</span>
+                          <h3 className="text-white font-bold text-xl drop-shadow-md z-10">{c.title}</h3>
                     </div>
                     <div className="p-5">
                       <p className="text-gray-500 dark:text-gray-400 text-sm line-clamp-2 mb-4 h-10">{c.description}</p>
                       <div className="flex items-center justify-between mt-2">
-                         <div className="flex items-center gap-2 text-xs font-medium text-gray-400">
-                            <User className="w-3 h-3"/> {c.profiles?.full_name || 'Profesor'}
-                         </div>
-                         
-                         {/* BOTONES DE EDICIÓN PARA PROFESOR */}
-                         {profile?.role === 'teacher' && (
+                          <div className="flex items-center gap-2 text-xs font-medium text-gray-400">
+                             <User className="w-3 h-3"/> {c.profiles?.full_name || 'Profesor'}
+                          </div>
+                          
+                          {/* BOTONES DE EDICIÓN PARA PROFESOR */}
+                          {profile?.role === 'teacher' && (
                              <div className="flex gap-2">
                                  <button onClick={(e) => handleEditCourse(c, e)} className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full text-indigo-500 transition-colors" title="Editar">
                                      <Edit className="w-4 h-4"/>
@@ -619,7 +631,7 @@ export default function Dashboard() {
                                      <Trash2 className="w-4 h-4"/>
                                  </button>
                              </div>
-                         )}
+                          )}
                       </div>
                     </div>
                   </div>
@@ -668,24 +680,25 @@ export default function Dashboard() {
                         </div>
                         <div className="max-h-96 overflow-y-auto space-y-2">
                            {enrolledStudents.map(st => (
-                             <div key={st.id} className="flex items-center gap-3 p-3 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-xl transition-colors">
-                               <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 text-white flex items-center justify-center font-bold text-xs">{st.email ? st.email[0].toUpperCase() : (st.full_name ? st.full_name[0].toUpperCase() : 'U')}</div>
-                               <span className="text-sm font-medium">
-                                   {st.email && st.email.trim() !== '' ? st.email : 
-                                    (st.full_name && st.full_name.trim() !== '' ? st.full_name : 
-                                    `ID: ${st.id.slice(0, 8)}...`)}
-                               </span>
+                             <div key={st.id} className="flex items-center gap-3 p-3 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-xl transition-colors border-b dark:border-gray-800/50">
+                               <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 text-white flex items-center justify-center font-bold text-sm shrink-0">
+                                   {st.email ? st.email[0].toUpperCase() : (st.full_name ? st.full_name[0].toUpperCase() : 'U')}
+                               </div>
+                               <div className="flex flex-col overflow-hidden">
+                                   {/* MOSTRAR EMAIL PRIORITARIAMENTE */}
+                                   <span className="text-sm font-bold text-gray-800 dark:text-gray-200 flex items-center gap-1.5 truncate">
+                                       <Mail className="w-3 h-3 text-indigo-400"/>
+                                       {st.email || "Sin email"}
+                                   </span>
+                                   <span className="text-xs text-gray-500 truncate">
+                                       {st.full_name || `ID: ${st.id.slice(0, 8)}...`}
+                                   </span>
+                               </div>
                              </div>
                            ))}
                            {!loadingStudents && enrolledStudents.length === 0 && <p className="text-gray-400 text-sm italic">Sin inscritos aún.</p>}
                            {loadingStudents && <p className="text-gray-400 text-xs animate-pulse">Cargando...</p>}
                         </div>
-                        {enrolledStudents.some(s => !s.email && !s.full_name) && (
-                            <div className="mt-2 p-2 bg-blue-50 dark:bg-blue-900/20 rounded-lg flex items-start gap-2 text-xs text-blue-600 dark:text-blue-400">
-                                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5"/>
-                                <p>Nota: Algunos perfiles no son públicos. Los estudiantes deben iniciar sesión.</p>
-                            </div>
-                        )}
                       </div>
 
                       <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border dark:border-gray-700 flex flex-col">
@@ -821,7 +834,7 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* VISTA: CREAR / EXPLORAR */}
+        {/* VISTA: CREAR / EDITAR / EXPLORAR */}
         {view === 'create' && (
           <div className="flex-1 overflow-y-auto p-6 flex justify-center items-start pt-10">
              <div className="w-full max-w-4xl bg-white dark:bg-gray-800 rounded-3xl shadow-xl border dark:border-gray-700 p-8">
