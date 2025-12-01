@@ -9,7 +9,8 @@ import {
   GraduationCap, Sun, Moon, Search, RefreshCw, 
   Video, ExternalLink, Trash2, Edit, Users, 
   ListChecks, ArrowLeft, Terminal, X, GripVertical, 
-  Check, Play, Code as CodeIcon, Calculator, Feather
+  Check, Play, Code as CodeIcon, Calculator, Feather,
+  LogOut as LeaveIcon
 } from 'lucide-react'
 import { useTheme } from 'next-themes'
 
@@ -152,14 +153,12 @@ export default function Dashboard() {
   const fetchCourses = async (role: string | undefined, userId: string) => {
     try {
       // 1. Obtener TODOS los cursos (Explore) primero
-      // Usamos una estrategia fallback: si falla el join con profiles (por FK perdida), traemos los cursos solos.
       let allData: any[] = []
       const { data: dataWithProfiles, error: errorProfiles } = await supabase.from('courses').select('*, profiles(full_name)')
       
       if (!errorProfiles && dataWithProfiles) {
         allData = dataWithProfiles
       } else {
-        console.warn("Error fetching with profiles (possible missing relation), fetching raw courses.", errorProfiles)
         const { data: rawData } = await supabase.from('courses').select('*')
         allData = rawData || []
       }
@@ -189,12 +188,18 @@ export default function Dashboard() {
     } catch (e) { console.error("Error fetching courses:", e) }
   }
 
+  // --- GESTIÓN DE ESTUDIANTES Y SESIONES ---
   const fetchEnrolledStudents = async (courseId: number) => {
-    const { data: enrollments } = await supabase.from('enrollments').select('student_id').eq('course_id', courseId)
-    if (!enrollments?.length) { setEnrolledStudents([]); return }
-    const ids = enrollments.map(e => e.student_id)
-    const { data: profiles } = await supabase.from('profiles').select('*').in('id', ids)
-    setEnrolledStudents(profiles || [])
+    try {
+        const { data: enrollments } = await supabase.from('enrollments').select('student_id').eq('course_id', courseId)
+        if (!enrollments || enrollments.length === 0) { 
+            setEnrolledStudents([]); 
+            return 
+        }
+        const ids = enrollments.map(e => e.student_id)
+        const { data: profiles } = await supabase.from('profiles').select('*').in('id', ids)
+        setEnrolledStudents(profiles || [])
+    } catch (e) { console.error("Error fetching students:", e) }
   }
 
   const fetchSessions = async (courseId: number) => {
@@ -274,9 +279,9 @@ export default function Dashboard() {
     } catch { syllabusList = course.syllabus || "" }
 
     const categoryPrompts = {
-      math: "Eres Profesor de Matemáticas. Es CRUCIAL que uses formato LaTeX con doble signo de dólar ($$ fórmula $$) para cualquier fórmula matemática. Sé muy visual y claro.",
-      programming: "Eres Senior Developer Mentor. Si pides que el alumno escriba código, termina tu respuesta con la etiqueta {{CODE_REQUEST}}. Evalúa su código con rigor.",
-      letters: "Eres Profesor de Literatura. Usa un lenguaje elegante. Si citas autores o textos importantes, enciérralos en comillas dobles para que el sistema los formatee bellamente.",
+      math: "Eres Profesor de Matemáticas. USA FORMATO LaTeX $$...$$ para formulas complejas. Muestra los pasos claramente.",
+      programming: "Eres Senior Developer Mentor. SI Y SOLO SI pides al alumno escribir código, termina tu respuesta con la etiqueta {{CODE_REQUEST}}. Si solo explicas, no la uses.",
+      letters: "Eres Profesor de Literatura. Usa citas elegantes precedidas por el signo mayor que (>).",
       other: "Eres un tutor experto y adaptable."
     }
 
@@ -284,9 +289,9 @@ export default function Dashboard() {
 
     return `CONTEXTO: Curso "${course.title}". TEMARIO: [${syllabusList}]. ROL: ${specificRole}. 
     REGLAS DE INTERACCIÓN: 
-    1. Para dar opciones de respuesta, usa el formato {{Opción A|Opción B|Opción C}} al final. 
-    2. Las fórmulas matemáticas SIEMPRE entre $$. 
-    3. Citas literarias entre comillas.
+    1. Para dar opciones de respuesta, SIEMPRE usa el formato {{Opción A|Opción B}} al final para que sean botones. 
+    2. Las fórmulas matemáticas SIEMPRE entre doble signo dolar ($$). 
+    3. Citas literarias o de texto importante usar formato markdown quote (> Cita).
     4. Sé didáctico y motivador.`
   }
 
@@ -315,33 +320,31 @@ export default function Dashboard() {
       // B. Procesamiento de Texto (Matemáticas, Citas, Markdown simple)
       let content = part;
 
-      // Renderizar Fórmulas Matemáticas ($$...$$) - Estilo Bloque Bonito
-      if (category === 'math' || category === 'other') {
-        const mathBlocks = content.split(/(\$\$[\s\S]*?\$\$)/g);
-        if (mathBlocks.length > 1) {
-          return mathBlocks.map((block, i) => {
-            if (block.startsWith('$$') && block.endsWith('$$')) {
-              const formula = block.slice(2, -2);
-              return (
-                <div key={`${index}-math-${i}`} className="my-4 py-4 px-6 bg-blue-50 dark:bg-[#1e293b] border-l-4 border-blue-500 rounded-r-lg shadow-sm text-center">
-                  <span className="font-serif text-xl md:text-2xl text-slate-800 dark:text-slate-200 tracking-wide font-medium">
-                    {formula}
-                  </span>
-                </div>
-              );
-            }
-            return <span key={`${index}-txt-${i}`} dangerouslySetInnerHTML={{ __html: formatInlineText(block, category) }} />;
-          });
-        }
+      // Renderizar Citas con formato Markdown (>) o comillas largas
+      if (content.includes('> ') || content.match(/".{20,}"/)) {
+         // Transformar markdown quote a div elegante
+         content = content.replace(/^> (.*$)/gm, '<div class="my-4 p-4 bg-[#fdf6e3] dark:bg-[#2c2b25] border-l-4 border-[#d33682] text-[#657b83] dark:text-[#a8a19f] font-serif italic text-lg leading-relaxed shadow-sm">"$1"</div>');
+         // Transformar comillas largas heredadas
+         content = content.replace(/"([^"]{20,})"/g, '<div class="my-4 p-4 bg-[#fdf6e3] dark:bg-[#2c2b25] border-l-4 border-[#d33682] text-[#657b83] dark:text-[#a8a19f] font-serif italic text-lg leading-relaxed shadow-sm">"$1"</div>');
       }
 
-      // Renderizar Citas Literarias ("..." o > ...) - Estilo Libro Antiguo
-      if (category === 'letters' || category === 'other') {
-        // Detectar comillas largas o párrafos que parecen citas
-        if (content.match(/".{20,}"/)) {
-            content = content.replace(/"([^"]{20,})"/g, '<div class="my-4 p-4 bg-[#fdf6e3] dark:bg-[#2c2b25] border-l-4 border-[#d33682] text-[#657b83] dark:text-[#a8a19f] font-serif italic text-lg leading-relaxed shadow-sm relative"><span class="absolute top-0 left-1 text-4xl opacity-20">“</span>$1<span class="absolute bottom-[-10px] right-2 text-4xl opacity-20">”</span></div>');
-            return <span key={index} dangerouslySetInnerHTML={{ __html: content }} />;
-        }
+      // Renderizar Fórmulas Matemáticas ($$...$$) - Estilo Bloque Bonito
+      // Aplicar esto en todas las categorías si detecta $$
+      const mathBlocks = content.split(/(\$\$[\s\S]*?\$\$)/g);
+      if (mathBlocks.length > 1) {
+        return mathBlocks.map((block, i) => {
+          if (block.startsWith('$$') && block.endsWith('$$')) {
+            const formula = block.slice(2, -2);
+            return (
+              <div key={`${index}-math-${i}`} className="my-4 py-4 px-6 bg-blue-50 dark:bg-[#1e293b] border-l-4 border-blue-500 rounded-r-lg shadow-sm text-center overflow-x-auto">
+                <span className="font-serif text-xl md:text-2xl text-slate-800 dark:text-slate-200 tracking-wide font-medium">
+                  {formula}
+                </span>
+              </div>
+            );
+          }
+          return <span key={`${index}-txt-${i}`} dangerouslySetInnerHTML={{ __html: formatInlineText(block, category) }} />;
+        });
       }
 
       // Default rendering
@@ -357,9 +360,7 @@ export default function Dashboard() {
       .replace(/\n/g, '<br/>');
     
     // Variables matemáticas inline ($x$)
-    if (cat === 'math' || cat === 'other') {
-      fmt = fmt.replace(/\$([^$]+?)\$/g, '<span class="font-serif italic bg-gray-100 dark:bg-gray-800 px-1 rounded text-pink-600 dark:text-pink-400 font-medium">$1</span>');
-    }
+    fmt = fmt.replace(/\$([^$]+?)\$/g, '<span class="font-serif italic bg-gray-100 dark:bg-gray-800 px-1 rounded text-pink-600 dark:text-pink-400 font-medium">$1</span>');
     return fmt;
   }
 
@@ -378,12 +379,11 @@ export default function Dashboard() {
       const before = val.substring(0, start);
       const after = val.substring(end);
       
-      // Insertar par y colocar cursor en medio
       const newVal = before + e.key + pairs[e.key] + after;
       e.currentTarget.value = newVal;
       e.currentTarget.selectionStart = start + 1;
       e.currentTarget.selectionEnd = start + 1;
-      setInputMsg(newVal); // Actualizar estado manual porque React no detecta el cambio programático directo a veces
+      setInputMsg(newVal); 
     }
   }
 
@@ -391,15 +391,51 @@ export default function Dashboard() {
   const createOrUpdateCourse = async () => {
     const payload = { title: newCourseTitle, description: newCourseDesc, category: newCourseCategory }
     if (editingCourseId) await supabase.from('courses').update(payload).eq('id', editingCourseId)
-    else await supabase.from('courses').insert({ ...payload, created_by: user.id, is_published: true }) // CORRECCIÓN: Forzar is_published: true
+    else await supabase.from('courses').insert({ ...payload, created_by: user.id, is_published: true })
     setNewCourseTitle(''); setNewCourseDesc(''); setEditingCourseId(null); setView('courses'); fetchCourses('teacher', user.id)
+  }
+
+  const handleDeleteCourse = async (courseId: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if(!confirm("¿Estás seguro de eliminar este curso? Se perderán los datos asociados.")) return;
+    
+    const { error } = await supabase.from('courses').delete().eq('id', courseId);
+    if (error) {
+        alert("Error al eliminar: " + error.message);
+    } else {
+        fetchCourses('teacher', user.id);
+    }
+  }
+
+  const handleLeaveCourse = async () => {
+    if(!selectedCourse || !user) return;
+    if(!confirm(`¿Deseas abandonar el curso "${selectedCourse.title}"?`)) return;
+
+    // Nota: supabase require una policy DELETE para enrollments
+    const { error } = await supabase.from('enrollments').delete().match({ student_id: user.id, course_id: selectedCourse.id });
+    
+    if (error) {
+        alert("No se pudo abandonar el curso. Intenta más tarde.");
+        console.error(error);
+    } else {
+        setView('courses');
+        fetchCourses('student', user.id);
+    }
+  }
+
+  const handleEditCourse = (course: Course, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setNewCourseTitle(course.title);
+    setNewCourseDesc(course.description);
+    setNewCourseCategory(course.category);
+    setEditingCourseId(course.id);
+    setView('create');
   }
   
   const generateSyllabus = async () => {
     if (!selectedCourse) return
     const res = await chatWithGemini(`Genera un array JSON estricto de 5 temas para "${selectedCourse.title}". Formato: ["Tema 1", "Tema 2"]`, "System", [])
     if (res.success) {
-      // Remove 's' flag for compatibility with ES2018-
       const match = res.message.match(/\[[\s\S]*\]/)
       if (match) setSyllabusItems(JSON.parse(match[0]))
     }
@@ -471,7 +507,7 @@ export default function Dashboard() {
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {myCourses.map(c => (
                   <div key={c.id} onClick={() => { setSelectedCourse(c); setView('course_detail'); fetchChatHistory(c.id); fetchSessions(c.id); if(profile?.role==='teacher') {fetchEnrolledStudents(c.id); try { const parsed = JSON.parse(c.syllabus || '[]'); setSyllabusItems(Array.isArray(parsed) ? parsed : []); } catch { setSyllabusItems([]); }} }}
-                        className="group bg-white dark:bg-gray-800 rounded-2xl border dark:border-gray-700 overflow-hidden cursor-pointer hover:shadow-2xl hover:-translate-y-1 transition-all duration-300">
+                        className="group bg-white dark:bg-gray-800 rounded-2xl border dark:border-gray-700 overflow-hidden cursor-pointer hover:shadow-2xl hover:-translate-y-1 transition-all duration-300 relative">
                     <div className={`h-36 p-6 flex flex-col justify-between relative overflow-hidden
                       ${c.category === 'math' ? 'bg-gradient-to-br from-blue-600 to-cyan-500' : 
                         c.category === 'programming' ? 'bg-gradient-to-br from-slate-800 to-black' : 
@@ -485,8 +521,22 @@ export default function Dashboard() {
                     </div>
                     <div className="p-5">
                       <p className="text-gray-500 dark:text-gray-400 text-sm line-clamp-2 mb-4 h-10">{c.description}</p>
-                      <div className="flex items-center gap-2 text-xs font-medium text-gray-400">
-                         <User className="w-3 h-3"/> {c.profiles?.full_name || 'Profesor'}
+                      <div className="flex items-center justify-between mt-2">
+                         <div className="flex items-center gap-2 text-xs font-medium text-gray-400">
+                            <User className="w-3 h-3"/> {c.profiles?.full_name || 'Profesor'}
+                         </div>
+                         
+                         {/* BOTONES DE EDICIÓN PARA PROFESOR */}
+                         {profile?.role === 'teacher' && (
+                             <div className="flex gap-2">
+                                 <button onClick={(e) => handleEditCourse(c, e)} className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full text-indigo-500 transition-colors" title="Editar">
+                                     <Edit className="w-4 h-4"/>
+                                 </button>
+                                 <button onClick={(e) => handleDeleteCourse(c.id, e)} className="p-2 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-full text-red-500 transition-colors" title="Eliminar">
+                                     <Trash2 className="w-4 h-4"/>
+                                 </button>
+                             </div>
+                         )}
                       </div>
                     </div>
                   </div>
@@ -508,7 +558,16 @@ export default function Dashboard() {
                   <span className="text-xs text-gray-500 capitalize">{selectedCourse.category}</span>
                 </div>
               </div>
-              {profile?.role === 'student' && <div className="flex items-center gap-2 px-3 py-1 bg-green-500/10 text-green-600 rounded-full text-xs font-bold animate-pulse"><div className="w-2 h-2 bg-green-500 rounded-full"/> En Vivo</div>}
+              <div className="flex items-center gap-3">
+                  {profile?.role === 'student' && (
+                      <>
+                        <div className="flex items-center gap-2 px-3 py-1 bg-green-500/10 text-green-600 rounded-full text-xs font-bold animate-pulse"><div className="w-2 h-2 bg-green-500 rounded-full"/> En Vivo</div>
+                        <button onClick={handleLeaveCourse} className="text-xs bg-red-50 dark:bg-red-900/20 text-red-500 hover:bg-red-100 px-3 py-1.5 rounded-lg border border-red-200 dark:border-red-900/30 font-bold transition-colors flex items-center gap-1">
+                            <LeaveIcon className="w-3 h-3"/> Abandonar
+                        </button>
+                      </>
+                  )}
+              </div>
             </header>
 
             <div className="flex-1 flex overflow-hidden">
