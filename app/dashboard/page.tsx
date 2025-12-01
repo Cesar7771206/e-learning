@@ -1,7 +1,8 @@
 'use client'
 
 import React, { useEffect, useState, useRef, useCallback } from 'react'
-import { createClient } from '@supabase/supabase-js'
+// Reemplaza la importación ESM por la de npm (funciona en Next.js/Node)
+import { createClient } from '@supabase/supabase-js';
 import { 
   LogOut, Plus, Book, User, Send, Bot, 
   GraduationCap, Sun, Moon, Search, RefreshCw, 
@@ -11,7 +12,8 @@ import {
   LogOut as LeaveIcon, Save, Ban, Mail, AlertTriangle
 } from 'lucide-react'
 
-// --- CONFIGURACIÓN SUPABASE (REEMPLAZA CON TUS DATOS REALES) ---
+// --- CONFIGURACIÓN SUPABASE ---
+// IMPORTANTE: Reemplaza estos valores con tu URL y Key reales de Supabase
 const SUPABASE_URL = 'https://tu-proyecto.supabase.co' 
 const SUPABASE_KEY = 'tu-anon-key-publica'
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
@@ -75,6 +77,11 @@ type Session = {
   link: string
 }
 
+// Enrollments table record
+interface Enrollment {
+  student_id: string
+}
+
 type Message = { 
   id?: string,
   role: 'user' | 'model', 
@@ -109,8 +116,8 @@ const parseMessageContent = (rawText: string) => {
   return { content, options: options.length > 0 ? options : undefined, isCodeRequest };
 }
 
-// --- CORRECCIÓN 1: HIGHLIGHTER SEGURO ---
-// Tokeniza en una sola pasada para no corromper el HTML generado
+// --- SOLUCIÓN BUG VISUAL EDITOR (HIGHLIGHTER SEGURO) ---
+// Tokeniza en una sola pasada para no corromper el HTML generado al escribir palabras reservadas
 const highlightCode = (code: string) => {
   if (!code) return '';
   
@@ -125,7 +132,7 @@ const highlightCode = (code: string) => {
   // Grupo 2: Comentarios (// o /* */)
   // Grupo 3: Keywords (palabras reservadas)
   // Grupo 4: Números
-  const tokenRegex = /(".*?"|'.*?'|`[\s\S]*?`)|(\/\/.*$|\/\*[\s\S]*?\*\/)|(\b(?:class|public|private|protected|function|const|let|var|if|else|return|import|export|from|async|await|new|this|typeof|interface|type|implements|extends)\b)|(\b\d+(\.\d+)?\b)/gm;
+  const tokenRegex = /(".*?"|'.*?'|`[\s\S]*?`)|(\/\/.*$|\/\*[\s\S]*?\*\/)|(\b(?:class|public|private|protected|function|const|let|var|if|else|return|import|export|from|async|await|new|this|typeof|interface|type|implements|extends|void|int|float|double|string|bool)\b)|(\b\d+(\.\d+)?\b)/gm;
 
   return safeCode.replace(tokenRegex, (match, string, comment, keyword, number) => {
       if (string) return `<span class="text-green-400">${string}</span>`;
@@ -201,7 +208,8 @@ const CodeEditor = ({ value, onChange, onRun, readOnly }: { value: string, onCha
 
 export default function Dashboard() {
   const [mounted, setMounted] = useState(false)
-  const [isDarkMode, setIsDarkMode] = useState(false)
+  // SOLUCIÓN: Modo Oscuro por defecto como pediste
+  const [isDarkMode, setIsDarkMode] = useState(true)
   
   // Estados Globales
   const [loadingProfile, setLoadingProfile] = useState(true)
@@ -257,15 +265,15 @@ export default function Dashboard() {
 
       if (!data || error) {
         await supabase.from('profiles').upsert(updates)
-        window.location.reload()
-        return
+        // Recargar solo si es absolutamente necesario, preferimos actualizar estado local
+        const { data: newData } = await supabase.from('profiles').select('*').eq('id', currentUser.id).single();
+        setProfile(newData);
       } else {
-        await supabase.from('profiles').update({ email: currentUser.email }).eq('id', currentUser.id)
+        setProfile(data);
       }
 
-      setProfile(data)
       setLoadingProfile(false)
-      fetchCourses(data.role, currentUser.id)
+      fetchCourses(data?.role || 'student', currentUser.id)
     } catch (err) { console.error(err); setLoadingProfile(false) }
   }, [])
 
@@ -273,11 +281,11 @@ export default function Dashboard() {
     setMounted(true)
     const init = async () => {
       const { data } = await supabase.auth.getUser()
-      if (!data.user) {
-         // Lógica de no usuario
-      } else { 
+      if (data.user) { 
          setUser(data.user); 
          fetchProfile(data.user); 
+      } else {
+         setLoadingProfile(false);
       }
     }
     init()
@@ -293,14 +301,19 @@ export default function Dashboard() {
     }
   }, [view, selectedCourse, profile])
 
-  // --- GESTIÓN DE CURSOS ---
+  // --- GESTIÓN DE CURSOS (ROBUSTA) ---
   const fetchCourses = async (role: string | undefined, userId: string) => {
     try {
       let allData: any[] = []
+      
+      // Intentamos cargar con relación a perfiles
       const { data: dataWithProfiles, error: errorProfiles } = await supabase.from('courses').select('*, profiles(full_name)')
       
-      if (!errorProfiles && dataWithProfiles) allData = dataWithProfiles
-      else {
+      if (!errorProfiles && dataWithProfiles) {
+        allData = dataWithProfiles
+      } else {
+        // Fallback: Si falla la relación, cargamos solo los cursos crudos
+        console.warn("Cargando cursos sin perfiles (fallback)...");
         const { data: rawData } = await supabase.from('courses').select('*')
         allData = rawData || []
       }
@@ -310,7 +323,6 @@ export default function Dashboard() {
         setMyCourses(my)
         setCourses(allData)
       } else {
-        // Enfoque robusto de dos pasos para evitar errores de relación
         const { data: enrollData } = await supabase.from('enrollments').select('course_id').eq('student_id', userId)
         const enrolledIds = new Set(enrollData?.map((e: any) => e.course_id) || [])
         const my = allData.filter(c => enrolledIds.has(c.id))
@@ -321,54 +333,53 @@ export default function Dashboard() {
     } catch (e) { console.error("Error fetching courses:", e) }
   }
 
-  // --- CORRECCIÓN 2: ESTUDIANTES ROBUSTO (DOS PASOS) ---
+  // --- SOLUCIÓN: GESTIÓN DE ESTUDIANTES (DOS PASOS PARA EVITAR ERRORES) ---
   const fetchEnrolledStudents = async (courseId: number) => {
     setLoadingStudents(true)
     try {
-        // PASO 1: Obtener solo los IDs de los estudiantes
-        const { data: enrollData, error: enrollError } = await supabase
-            .from('enrollments')
-            .select('student_id')
-            .eq('course_id', courseId)
-        
-        if (enrollError) throw enrollError;
-        
-        if (!enrollData || enrollData.length === 0) { 
-            setEnrolledStudents([]); 
-            setLoadingStudents(false);
-            return;
-        }
-        
-        const studentIds = enrollData.map(e => e.student_id);
+      // PASO 1: Obtener solo los IDs de los estudiantes
+      const { data: enrollData, error: enrollError } = await supabase
+        .from('enrollments')
+        .select('student_id')
+        .eq('course_id', courseId);
 
-        // PASO 2: Obtener perfiles usando esos IDs
-        // Esto evita errores de "Could not find relationship" en Supabase
-        const { data: profilesData, error: profilesError } = await supabase
-            .from('profiles')
-            .select('*')
-            .in('id', studentIds)
-            
-        if (profilesError) throw profilesError;
+      if (enrollError) throw enrollError;
 
-        // Mapear asegurando que tenemos datos
-        const students = studentIds.map(id => {
-            const foundProfile = profilesData?.find(p => p.id === id);
-            return foundProfile || {
-                id: id,
-                full_name: 'Estudiante (Sin Perfil)',
-                email: 'No disponible',
-                role: 'student'
-            } as Profile;
-        });
+      if (!enrollData || enrollData.length === 0) {
+        setEnrolledStudents([]);
+        setLoadingStudents(false);
+        return;
+      }
 
-        setEnrolledStudents(students);
+      const studentIds: string[] = enrollData.map((e: Enrollment) => e.student_id);
 
-    } catch (e) { 
-        console.error("Error fetching students:", e) 
-    } finally { 
-        setLoadingStudents(false) 
+      // PASO 2: Obtener perfiles usando esos IDs
+      const { data: profilesData, error: profilesError } = await supabase
+        .from('profiles')
+        .select('*')
+        .in('id', studentIds);
+
+      if (profilesError) throw profilesError;
+
+      // Mapear asegurando que tenemos datos
+      const students: Profile[] = studentIds.map((id: string) => {
+        const foundProfile = profilesData?.find((p: Profile) => p.id === id);
+        return foundProfile || {
+          id: id,
+          full_name: 'Estudiante (Sin Perfil)',
+          email: 'No disponible',
+          role: 'student'
+        } as Profile;
+      });
+
+      setEnrolledStudents(students);
+
+    } catch (e) {
+      console.error("Error fetching students:", e)
+    } finally {
+      setLoadingStudents(false)
     }
-  }
+    }
 
   const fetchSessions = async (courseId: number) => {
     const { data } = await supabase.from('sessions').select('*').eq('course_id', courseId).order('date', { ascending: true })
@@ -507,11 +518,13 @@ export default function Dashboard() {
             const { error } = await supabase.from('courses').update(payload).eq('id', editingCourseId);
             if (error) throw error;
             
+            // Actualización optimista local
+            const updated = { ...selectedCourse, ...payload } as Course;
             setMyCourses(prev => prev.map(c => c.id === editingCourseId ? { ...c, ...payload } : c));
             setCourses(prev => prev.map(c => c.id === editingCourseId ? { ...c, ...payload } : c));
             
             if (selectedCourse?.id === editingCourseId) {
-                setSelectedCourse({ ...selectedCourse, ...payload });
+                setSelectedCourse(updated);
             }
             alert("Curso actualizado correctamente.");
         } else {
@@ -528,51 +541,54 @@ export default function Dashboard() {
     }
   }
 
-  // --- CORRECCIÓN 3: ELIMINACIÓN ROBUSTA (SECUENCIAL) ---
+  // --- SOLUCIÓN: ELIMINACIÓN ROBUSTA (SECUENCIAL Y EN CASCADA) ---
   const handleDeleteCourse = async (courseId: number, e: React.MouseEvent) => {
     e.stopPropagation();
     if(!confirm("⚠️ ADVERTENCIA: ¿Estás seguro de eliminar este curso?\nSe borrarán permanentemente todos los estudiantes inscritos, chats, sesiones y tareas.")) return;
     
     try {
-        console.log("Iniciando eliminación en cascada...");
+      console.log("Iniciando eliminación en cascada...");
 
-        // 1. Obtener Sesiones de IA
-        const { data: aiSessions } = await supabase.from('ai_sessions').select('id').eq('course_id', courseId);
-        const aiSessionIds = aiSessions?.map(s => s.id) || [];
+      // 1. Obtener Sesiones de IA
+      interface AiSession {
+        id: number;
+      }
+      const { data: aiSessions }: { data: AiSession[] | null } = await supabase.from('ai_sessions').select('id').eq('course_id', courseId);
+      const aiSessionIds: number[] = aiSessions?.map((s: AiSession) => s.id) || [];
         
-        // 2. Borrar Mensajes de IA
-        if (aiSessionIds.length > 0) {
-            await supabase.from('ai_messages').delete().in('session_id', aiSessionIds);
-        }
+      // 2. Borrar Mensajes de IA
+      if (aiSessionIds.length > 0) {
+        await supabase.from('ai_messages').delete().in('session_id', aiSessionIds);
+      }
 
-        // 3. Borrar Sesiones de IA (Padres)
-        await supabase.from('ai_sessions').delete().eq('course_id', courseId);
+      // 3. Borrar Sesiones de IA (Padres)
+      await supabase.from('ai_sessions').delete().eq('course_id', courseId);
 
-        // 4. Borrar el resto SECUENCIALMENTE para evitar bloqueos
-        await supabase.from('chat_messages').delete().eq('course_id', courseId);
-        await supabase.from('sessions').delete().eq('course_id', courseId);
-        await supabase.from('tutoring_sessions').delete().eq('course_id', courseId);
+      // 4. Borrar el resto SECUENCIALMENTE para evitar bloqueos
+      await supabase.from('chat_messages').delete().eq('course_id', courseId);
+      await supabase.from('sessions').delete().eq('course_id', courseId);
+      await supabase.from('tutoring_sessions').delete().eq('course_id', courseId);
         
-        // 5. Borrar Inscripciones (Critical step before Course)
-        const { error: enrollError } = await supabase.from('enrollments').delete().eq('course_id', courseId);
-        if (enrollError) console.error("Error borrando enrollments:", enrollError);
+      // 5. Borrar Inscripciones (Paso crítico antes de borrar curso)
+      const { error: enrollError }: { error: any } = await supabase.from('enrollments').delete().eq('course_id', courseId);
+      if (enrollError) console.error("Error borrando enrollments:", enrollError);
         
-        // 6. Finalmente borrar Curso
-        const { error: courseError } = await supabase.from('courses').delete().eq('id', courseId);
-        if (courseError) throw courseError;
+      // 6. Finalmente borrar Curso
+      const { error: courseError }: { error: any } = await supabase.from('courses').delete().eq('id', courseId);
+      if (courseError) throw courseError;
         
-        setMyCourses(prev => prev.filter(c => c.id !== courseId));
-        setCourses(prev => prev.filter(c => c.id !== courseId));
+      setMyCourses((prev: Course[]) => prev.filter((c: Course) => c.id !== courseId));
+      setCourses((prev: Course[]) => prev.filter((c: Course) => c.id !== courseId));
         
-        if (selectedCourse?.id === courseId) {
-            setView('courses');
-            setSelectedCourse(null);
-        }
-        alert("Curso eliminado correctamente.");
+      if (selectedCourse?.id === courseId) {
+        setView('courses');
+        setSelectedCourse(null);
+      }
+      alert("Curso eliminado correctamente.");
         
     } catch (e: any) {
-        console.error("Error detallado:", e);
-        alert("Error al eliminar: " + (e.message || JSON.stringify(e)));
+      console.error("Error detallado:", e);
+      alert("Error al eliminar: " + (e.message || JSON.stringify(e)));
     }
   }
 
@@ -621,6 +637,7 @@ export default function Dashboard() {
         <button onClick={() => supabase.auth.signInWithOAuth({ provider: 'google' })} className="bg-white border text-gray-700 px-6 py-3 rounded-xl font-bold hover:bg-gray-50 flex items-center gap-2">
            <User className="w-4 h-4"/> Iniciar Sesión con Supabase
         </button>
+        <p className="mt-4 text-xs text-gray-400">Si estás en modo prueba, asegúrate de configurar SUPABASE_URL y SUPABASE_KEY en el código.</p>
      </div>
   )
 
@@ -748,7 +765,7 @@ export default function Dashboard() {
                       <div className={`p-6 rounded-2xl shadow-sm border ${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}>
                         <div className="flex justify-between items-center mb-4">
                            <h3 className="font-bold text-lg flex items-center gap-2"><Users className="text-indigo-500"/> Estudiantes ({enrolledStudents.length})</h3>
-                           <button onClick={() => fetchEnrolledStudents(selectedCourse.id)} disabled={loadingStudents} className={`p-1.5 rounded-lg transition-colors text-gray-500 hover:text-indigo-600 ${isDarkMode ? 'bg-gray-700 hover:bg-indigo-900/30' : 'bg-gray-100 hover:bg-indigo-100'}`} title="Actualizar lista">
+                           <button onClick={() => fetchEnrolledStudents(selectedCourse.id)} disabled={loadingStudents} className={`p-1.5 rounded-lg transition-colors text-gray-500 hover:text-indigo-600 ${isDarkMode ? 'bg-gray-700 hover:bg-indigo-900/30' : 'bg-gray-100 hover:bg-gray-100'}`} title="Actualizar lista">
                               <RefreshCw className={`w-3.5 h-3.5 ${loadingStudents ? 'animate-spin' : ''}`}/>
                            </button>
                         </div>
