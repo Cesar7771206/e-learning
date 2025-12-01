@@ -148,34 +148,42 @@ export default function Dashboard() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, codeEditorVisible])
 
-  // --- GESTIÓN DE CURSOS ---
+  // --- GESTIÓN DE CURSOS (MEJORADA PARA ROBUSTEZ) ---
   const fetchCourses = async (role: string | undefined, userId: string) => {
     try {
+      // 1. Obtener TODOS los cursos (Explore) primero
+      // Usamos una estrategia fallback: si falla el join con profiles (por FK perdida), traemos los cursos solos.
+      let allData: any[] = []
+      const { data: dataWithProfiles, error: errorProfiles } = await supabase.from('courses').select('*, profiles(full_name)')
+      
+      if (!errorProfiles && dataWithProfiles) {
+        allData = dataWithProfiles
+      } else {
+        console.warn("Error fetching with profiles (possible missing relation), fetching raw courses.", errorProfiles)
+        const { data: rawData } = await supabase.from('courses').select('*')
+        allData = rawData || []
+      }
+
       if (role === 'teacher') {
-        // Profesor: Ver sus propios cursos creados
-        const { data } = await supabase.from('courses').select('*, profiles(full_name)').eq('created_by', userId)
-        setMyCourses(data || [])
+        // Profesor: 
+        // A. Mis Cursos (los creados por mí)
+        const my = allData.filter(c => c.created_by === userId)
+        setMyCourses(my)
+        
+        // B. Explore (Todos los cursos, para que el profe vea qué hay en la DB)
+        setCourses(allData)
       } else {
         // Estudiante: 
-        // 1. Obtener inscripciones (Mis Cursos)
-        // Nota: Asegúrate de que la relación en Supabase sea correcta. A veces se necesita especificar el nombre de la FK.
-        const { data: enrollData } = await supabase.from('enrollments')
-          .select('course_id, courses(*, profiles(full_name))')
-          .eq('student_id', userId)
+        // 1. Obtener inscripciones
+        const { data: enrollData } = await supabase.from('enrollments').select('course_id').eq('student_id', userId)
+        const enrolledIds = new Set(enrollData?.map((e: any) => e.course_id) || [])
         
-        // Filtramos nulos para evitar errores si el curso fue borrado pero la inscripción quedó
-        const enrolled = enrollData?.map((e: any) => e.courses).filter((c: any) => c !== null) || []
-        setMyCourses(enrolled)
+        // A. Mis Cursos (los que estoy inscrito)
+        const my = allData.filter(c => enrolledIds.has(c.id))
+        setMyCourses(my)
         
-        // 2. Obtener todos los cursos disponibles para "Explorar"
-        // CORRECCIÓN: Eliminado .eq('is_published', true) para que se vean todos los cursos,
-        // ya que los antiguos podrían no tener este flag set a true.
-        const { data: allData } = await supabase.from('courses').select('*, profiles(full_name)')
-        
-        // Filtramos los que YA estoy inscrito para que no salgan duplicados en Explorar (opcional)
-        const enrolledIds = new Set(enrolled.map((c: any) => c.id))
-        const available = allData?.filter((c: any) => !enrolledIds.has(c.id)) || []
-        
+        // B. Explore (los que NO estoy inscrito)
+        const available = allData.filter(c => !enrolledIds.has(c.id))
         setCourses(available)
       }
     } catch (e) { console.error("Error fetching courses:", e) }
@@ -684,30 +692,52 @@ export default function Dashboard() {
                 </div>
 
                 {profile?.role === 'teacher' ? (
-                  <div className="space-y-6 max-w-lg mx-auto">
-                      <div>
-                        <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Título del Curso</label>
-                        <input value={newCourseTitle} onChange={e => setNewCourseTitle(e.target.value)} className="w-full px-4 py-3 rounded-xl border dark:bg-gray-900 dark:border-gray-700 focus:ring-2 focus:ring-indigo-500 outline-none transition-shadow" placeholder="Ej: Cálculo Avanzado I"/>
-                      </div>
-                      <div>
-                        <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Categoría</label>
-                        <div className="grid grid-cols-2 gap-3">
-                          {['math', 'programming', 'letters', 'other'].map((cat: any) => (
-                            <button key={cat} onClick={() => setNewCourseCategory(cat)} className={`p-3 rounded-xl border text-sm font-bold capitalize transition-all flex items-center justify-center gap-2 ${newCourseCategory === cat ? 'bg-indigo-600 text-white border-indigo-600 ring-2 ring-indigo-200' : 'hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
-                               {cat === 'math' ? <Calculator className="w-4 h-4"/> : cat === 'programming' ? <Terminal className="w-4 h-4"/> : cat === 'letters' ? <Feather className="w-4 h-4"/> : <Book className="w-4 h-4"/>}
-                               {cat === 'math' ? 'Matemáticas' : cat === 'letters' ? 'Letras' : cat === 'programming' ? 'Programación' : 'Otros'}
-                            </button>
-                          ))}
+                  <>
+                    <div className="space-y-6 max-w-lg mx-auto mb-10">
+                        <div>
+                          <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Título del Curso</label>
+                          <input value={newCourseTitle} onChange={e => setNewCourseTitle(e.target.value)} className="w-full px-4 py-3 rounded-xl border dark:bg-gray-900 dark:border-gray-700 focus:ring-2 focus:ring-indigo-500 outline-none transition-shadow" placeholder="Ej: Cálculo Avanzado I"/>
                         </div>
+                        <div>
+                          <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Categoría</label>
+                          <div className="grid grid-cols-2 gap-3">
+                            {['math', 'programming', 'letters', 'other'].map((cat: any) => (
+                              <button key={cat} onClick={() => setNewCourseCategory(cat)} className={`p-3 rounded-xl border text-sm font-bold capitalize transition-all flex items-center justify-center gap-2 ${newCourseCategory === cat ? 'bg-indigo-600 text-white border-indigo-600 ring-2 ring-indigo-200' : 'hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
+                                {cat === 'math' ? <Calculator className="w-4 h-4"/> : cat === 'programming' ? <Terminal className="w-4 h-4"/> : cat === 'letters' ? <Feather className="w-4 h-4"/> : <Book className="w-4 h-4"/>}
+                                {cat === 'math' ? 'Matemáticas' : cat === 'letters' ? 'Letras' : cat === 'programming' ? 'Programación' : 'Otros'}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Descripción</label>
+                          <textarea value={newCourseDesc} onChange={e => setNewCourseDesc(e.target.value)} className="w-full px-4 py-3 rounded-xl border h-32 resize-none dark:bg-gray-900 dark:border-gray-700 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="¿De qué trata este curso?"/>
+                        </div>
+                        <button onClick={createOrUpdateCourse} disabled={!newCourseTitle || !newCourseDesc} className="w-full py-4 bg-indigo-600 text-white rounded-xl font-bold text-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-xl shadow-indigo-500/20 transition-all transform hover:scale-[1.02]">
+                          {editingCourseId ? 'Guardar Cambios' : 'Publicar Curso'}
+                        </button>
+                    </div>
+
+                    {/* VISTA EXPLORE PARA PROFESORES (PARA QUE VEAN LOS CURSOS EXISTENTES) */}
+                    <div className="pt-8 border-t dark:border-gray-700">
+                      <h3 className="font-bold text-lg mb-4 text-gray-500 dark:text-gray-400">Todos los Cursos en la Plataforma ({courses.length})</h3>
+                      <div className="grid grid-cols-1 gap-3 max-h-64 overflow-y-auto">
+                        {courses.length === 0 && <p className="text-gray-400 text-sm italic">No se encontraron cursos.</p>}
+                        {courses.map(c => (
+                            <div key={c.id} className="flex items-center justify-between p-3 rounded-lg border dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+                              <div className="flex items-center gap-3">
+                                <div className={`w-2 h-10 rounded-full ${c.category === 'math' ? 'bg-blue-500' : c.category === 'programming' ? 'bg-black dark:bg-white' : c.category === 'letters' ? 'bg-amber-500' : 'bg-indigo-500'}`}></div>
+                                <div>
+                                  <h4 className="font-bold text-sm dark:text-gray-200">{c.title}</h4>
+                                  <p className="text-xs text-gray-500">{c.profiles?.full_name || 'Desconocido'}</p>
+                                </div>
+                              </div>
+                              {c.created_by === user.id && <span className="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded font-bold">Mío</span>}
+                            </div>
+                        ))}
                       </div>
-                      <div>
-                        <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Descripción</label>
-                        <textarea value={newCourseDesc} onChange={e => setNewCourseDesc(e.target.value)} className="w-full px-4 py-3 rounded-xl border h-32 resize-none dark:bg-gray-900 dark:border-gray-700 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="¿De qué trata este curso?"/>
-                      </div>
-                      <button onClick={createOrUpdateCourse} disabled={!newCourseTitle || !newCourseDesc} className="w-full py-4 bg-indigo-600 text-white rounded-xl font-bold text-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-xl shadow-indigo-500/20 transition-all transform hover:scale-[1.02]">
-                         {editingCourseId ? 'Guardar Cambios' : 'Publicar Curso'}
-                      </button>
-                  </div>
+                    </div>
+                  </>
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {courses.length === 0 && <div className="col-span-2 text-center py-10 text-gray-400 italic">No hay nuevos cursos disponibles por ahora.</div>}
@@ -720,7 +750,7 @@ export default function Dashboard() {
                               </div>
                               <h3 className="font-bold text-lg dark:text-white group-hover:text-indigo-600 transition-colors">{c.title}</h3>
                               <p className="text-sm text-gray-500 line-clamp-1 max-w-[250px]">{c.description}</p>
-                              <p className="text-xs text-gray-400 mt-2 flex items-center gap-1"><User className="w-3 h-3"/> {c.profiles?.full_name}</p>
+                              <p className="text-xs text-gray-400 mt-2 flex items-center gap-1"><User className="w-3 h-3"/> {c.profiles?.full_name || 'Profesor'}</p>
                             </div>
                             <button onClick={async () => {
                               try {
