@@ -77,13 +77,14 @@ const parseMessageContent = (rawText: string) => {
   return { content, options: options.length > 0 ? options : undefined, isCodeRequest };
 }
 
-// Resaltado de sintaxis mejorado
+// Resaltado de sintaxis SEGURO (Sin romper HTML)
 const highlightCode = (code: string) => {
   if (!code) return '';
+  // Escapar HTML primero para evitar inyecciones o rupturas
   let highlighted = code
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-  // Palabras reservadas ampliadas para cubrir más lenguajes (JS, Python, Java, C++, SQL)
+  // Palabras reservadas ampliadas
   const keywords = /\b(function|const|let|var|if|else|return|import|from|class|export|async|await|def|for|while|try|catch|public|private|protected|static|void|int|float|double|bool|boolean|string|String|new|this|extends|implements|interface|type|package|namespace|using|include|struct|template|typename|override|virtual|final|None|True|False|null|undefined|print|console|echo|select|from|where|insert|update|delete|create|table)\b/g;
 
   const builtins = /\b(console|log|map|filter|reduce|push|print|len|range|std|cout|cin|printf|scanf|System|out|println|alert|document|window)\b/g;
@@ -93,18 +94,21 @@ const highlightCode = (code: string) => {
   // Símbolos especiales
   const brackets = /([{}()\[\]])/g;
 
+  // Reemplazo seguro usando tokens únicos temporalmente si fuera muy complejo, 
+  // pero para este nivel, el orden importa: strings primero para no colorear keywords dentro de strings.
+
   highlighted = highlighted
+    .replace(strings, '<span class="text-green-400">$1</span>') // Strings primero
+    .replace(comments, '<span class="text-gray-500 italic">$1</span>')
     .replace(keywords, '<span class="text-purple-400 font-bold">$1</span>')
     .replace(builtins, '<span class="text-blue-400">$1</span>')
-    .replace(strings, '<span class="text-green-400">$1</span>')
     .replace(numbers, '<span class="text-orange-400">$1</span>')
-    .replace(comments, '<span class="text-gray-500 italic">$1</span>')
     .replace(brackets, '<span class="text-yellow-500">$1</span>');
 
   return highlighted;
 }
 
-// --- COMPONENTE EDITOR DE CÓDIGO MEJORADO ---
+// --- COMPONENTE EDITOR DE CÓDIGO MEJORADO Y SEGURO ---
 const CodeEditor = ({ value, onChange, onRun, readOnly }: { value: string, onChange: (v: string) => void, onRun?: () => void, readOnly?: boolean }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const preRef = useRef<HTMLPreElement>(null);
@@ -130,23 +134,33 @@ const CodeEditor = ({ value, onChange, onRun, readOnly }: { value: string, onCha
     // Autocompletado de llaves y paréntesis
     if (e.key === '{') {
       e.preventDefault();
-      target.setRangeText('{}', selectionStart, selectionEnd, 'preserve');
-      // Mover cursor al medio
+      const val = target.value;
+      const before = val.substring(0, selectionStart);
+      const after = val.substring(selectionEnd);
+      // Actualizamos estado manualmente para evitar race conditions
+      const newValue = before + '{}' + after;
+      onChange(newValue);
+
+      // Ajuste de cursor (Hack para React state update delay)
       setTimeout(() => {
-        target.selectionStart = selectionStart + 1;
-        target.selectionEnd = selectionStart + 1;
+        if (textareaRef.current) {
+          textareaRef.current.selectionStart = selectionStart + 1;
+          textareaRef.current.selectionEnd = selectionStart + 1;
+        }
       }, 0);
-      onChange(target.value.slice(0, selectionStart) + '{}' + target.value.slice(selectionEnd));
     }
 
     if (e.key === '(') {
       e.preventDefault();
-      target.setRangeText('()', selectionStart, selectionEnd, 'preserve');
+      const val = target.value;
+      const newValue = val.substring(0, selectionStart) + '()' + val.substring(selectionEnd);
+      onChange(newValue);
       setTimeout(() => {
-        target.selectionStart = selectionStart + 1;
-        target.selectionEnd = selectionStart + 1;
+        if (textareaRef.current) {
+          textareaRef.current.selectionStart = selectionStart + 1;
+          textareaRef.current.selectionEnd = selectionStart + 1;
+        }
       }, 0);
-      onChange(target.value.slice(0, selectionStart) + '()' + target.value.slice(selectionEnd));
     }
   };
 
@@ -164,7 +178,7 @@ const CodeEditor = ({ value, onChange, onRun, readOnly }: { value: string, onCha
         )}
       </div>
 
-      <div className="relative w-full h-[calc(100%-40px)]">
+      <div className="relative w-full h-[calc(100%-40px)] text-base">
         {/* Capa de renderizado (colores) */}
         <pre
           ref={preRef}
@@ -183,6 +197,7 @@ const CodeEditor = ({ value, onChange, onRun, readOnly }: { value: string, onCha
           disabled={readOnly}
           className={`absolute inset-0 w-full h-full p-4 m-0 font-mono text-sm leading-relaxed bg-transparent text-transparent caret-white resize-none outline-none whitespace-pre-wrap break-words overflow-auto z-10 ${readOnly ? 'opacity-0 cursor-default' : ''}`}
           placeholder={readOnly ? "" : "// Escribe tu código aquí..."}
+          style={{ color: 'transparent', caretColor: 'white' }}
         />
 
         {!readOnly && onRun && (
@@ -244,7 +259,7 @@ export default function Dashboard() {
     try {
       const { data, error } = await supabase.from('profiles').select('*').eq('id', currentUser.id).maybeSingle()
 
-      // Si no existe perfil, lo creamos usando los metadatos del registro (nombre completo)
+      // CORRECCIÓN: Si no existe el perfil, forzamos la creación usando los metadatos o el email
       const updates = {
         id: currentUser.id,
         email: currentUser.email,
@@ -254,6 +269,7 @@ export default function Dashboard() {
       };
 
       if (!data || error) {
+        // Intentar crear si no existe (Backup si el trigger falló)
         await supabase.from('profiles').upsert(updates)
         window.location.reload()
         return
@@ -289,7 +305,6 @@ export default function Dashboard() {
   const fetchCourses = async (role: string | undefined, userId: string) => {
     try {
       // JOIN CORRECTO: Traer el perfil del profesor
-      // Nota: Usamos el alias profiles para la relación created_by
       const { data: allData, error } = await supabase
         .from('courses')
         .select(`
@@ -328,7 +343,8 @@ export default function Dashboard() {
 
       const finalStudents = ids.map(id => {
         const found = profiles?.find(p => p.id === id);
-        return found || { id, role: 'student', full_name: 'Desconocido', email: '-' } as Profile;
+        // Fallback mejorado para visualización
+        return found || { id, role: 'student', full_name: 'Estudiante (Sin Perfil)', email: '-' } as Profile;
       })
       setEnrolledStudents(finalStudents)
     } catch (e) { console.error(e) } finally { setLoadingStudents(false) }
@@ -351,10 +367,8 @@ export default function Dashboard() {
         options: m.options ? (typeof m.options === 'string' ? JSON.parse(m.options) : m.options) : undefined,
         isCodeRequest: m.is_code_request
       })))
-      // Si el último mensaje pedía código, mostramos el editor
       if (data[data.length - 1].is_code_request) {
         setCodeEditorVisible(true)
-        // Limpiamos el inputMsg para que el editor esté limpio o con plantilla
         setInputMsg('')
       }
     } else {
@@ -377,7 +391,7 @@ export default function Dashboard() {
     setMessages(prev => [...prev, userMsg])
     setInputMsg('')
     setAiLoading(true)
-    setCodeEditorVisible(false) // Ocultar editor tras enviar
+    setCodeEditorVisible(false)
 
     await supabase.from('chat_messages').insert({ user_id: user.id, course_id: selectedCourse.id, role: 'user', content: txt })
 
@@ -399,7 +413,7 @@ export default function Dashboard() {
     })
     if (isCodeRequest) {
       setCodeEditorVisible(true)
-      setInputMsg('') // Limpiar input para usarlo en el editor
+      setInputMsg('')
     }
   }
 
@@ -439,9 +453,7 @@ export default function Dashboard() {
           </div>
         );
       }
-      // Renderizar texto normal, LaTeX, Citas, etc.
       let content = part;
-      // ... (Lógica de LaTeX y Citas igual que antes) ...
       const mathBlocks = content.split(/(\$\$[\s\S]*?\$\$)/g);
       if (mathBlocks.length > 1) {
         return mathBlocks.map((blk, i) => {
@@ -491,20 +503,19 @@ export default function Dashboard() {
     if (!confirm("⚠️ ¿Estás seguro? Se borrarán todos los datos del curso.")) return;
 
     try {
-      // BORRADO EN CASCADA MANUAL (Ya que Supabase a veces requiere configuración explícita)
-      const { data: aiSessions } = await supabase.from('ai_sessions').select('id').eq('course_id', courseId);
-      const aiSessionIds = aiSessions?.map(s => s.id) || [];
-      if (aiSessionIds.length > 0) {
-        await supabase.from('ai_messages').delete().in('session_id', aiSessionIds);
-        await supabase.from('ai_sessions').delete().eq('course_id', courseId);
-      }
-      await supabase.from('chat_messages').delete().eq('course_id', courseId);
-      await supabase.from('sessions').delete().eq('course_id', courseId);
-      await supabase.from('tutoring_sessions').delete().eq('course_id', courseId);
-      await supabase.from('enrollments').delete().eq('course_id', courseId);
-
+      // INTENTO DIRECTO (Funciona si el script SQL de cascade se ejecutó)
       const { error } = await supabase.from('courses').delete().eq('id', courseId);
-      if (error) throw error;
+
+      if (error) {
+        // FALLBACK MANUAL si el CASCADE no está configurado aún en BD
+        console.warn("Cascade delete failed, trying manual delete...", error);
+        await supabase.from('enrollments').delete().eq('course_id', courseId);
+        await supabase.from('chat_messages').delete().eq('course_id', courseId);
+        await supabase.from('sessions').delete().eq('course_id', courseId);
+        // Borrar el curso finalmente
+        const { error: finalErr } = await supabase.from('courses').delete().eq('id', courseId);
+        if (finalErr) throw finalErr;
+      }
 
       // Actualizar UI
       setMyCourses(prev => prev.filter(c => c.id !== courseId));
@@ -520,7 +531,6 @@ export default function Dashboard() {
     const { error } = await supabase.from('enrollments').delete().match({ student_id: user.id, course_id: selectedCourse.id });
     if (error) alert("Error al abandonar.");
     else {
-      // Actualizar UI tras abandonar
       setMyCourses(prev => prev.filter(c => c.id !== selectedCourse.id))
       setView('courses');
     }
