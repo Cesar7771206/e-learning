@@ -27,7 +27,7 @@ export default function LoginPage() {
 
     try {
       if (isSignUp) {
-        const { data, error } = await supabase.auth.signUp({
+        const { error } = await supabase.auth.signUp({
           email,
           password,
           options: {
@@ -38,11 +38,7 @@ export default function LoginPage() {
           },
         })
         if (error) throw error
-        if (data.session) {
-          router.push('/dashboard')
-        } else {
-          setMsg('¡Cuenta creada! Revisa tu correo o inicia sesión.')
-        }
+        setMsg('¡Cuenta creada! Revisa tu correo o inicia sesión.')
       } else {
         const { error } = await supabase.auth.signInWithPassword({
           email,

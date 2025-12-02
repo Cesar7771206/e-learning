@@ -1,8 +1,9 @@
 'use client'
 
-import React, { useEffect, useState, useRef, useCallback } from 'react'
-import { supabase } from '../../lib/supabase';
-import { useTheme } from 'next-themes'
+import { useEffect, useState, useRef, useCallback } from 'react'
+import { supabase } from '@/lib/supabase'
+import { useRouter } from 'next/navigation'
+import { chatWithGemini } from '../actions'
 import {
   LogOut, Plus, Book, User, Send, Bot,
   GraduationCap, Sun, Moon, Search, RefreshCw,
@@ -11,42 +12,7 @@ import {
   Play, Code as CodeIcon, Calculator, Feather,
   LogOut as LeaveIcon, Save, Ban, Mail, AlertTriangle
 } from 'lucide-react'
-
-// --- CONFIGURACIÓN GEMINI API ---
-const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY || "";
-const MODEL_NAME = "gemini-2.5-flash-preview-09-2025";
-
-async function chatWithGemini(userMessage: string, systemInstruction: string, history: { role: string, content: string }[]) {
-  try {
-    const contents = [
-      ...history.map(h => ({ role: h.role, parts: [{ text: h.content }] })),
-      { role: "user", parts: [{ text: userMessage }] }
-    ];
-
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: contents,
-          systemInstruction: { parts: [{ text: systemInstruction }] }
-        })
-      }
-    );
-
-    const data = await response.json();
-    if (data.error) throw new Error(data.error.message);
-
-    return {
-      success: true,
-      message: data.candidates?.[0]?.content?.parts?.[0]?.text || "No response"
-    };
-  } catch (error: any) {
-    console.error("Gemini Error:", error);
-    return { success: false, message: "Error conectando con la IA." };
-  }
-}
+import { useTheme } from 'next-themes'
 
 // --- TIPOS ---
 type Profile = { id: string, role: 'student' | 'teacher', full_name: string, avatar_url?: string, email?: string }
@@ -69,10 +35,6 @@ type Session = {
   date: string,
   time: string,
   link: string
-}
-
-interface Enrollment {
-  student_id: string
 }
 
 type Message = {
@@ -111,29 +73,23 @@ const parseMessageContent = (rawText: string) => {
 
 const highlightCode = (code: string) => {
   if (!code) return '';
+  let highlighted = code
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-  try {
-    const safeCode = code
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
+  const keywords = /\b(function|const|let|var|if|else|return|import|from|class|export|async|await|def|for|while|try|catch|public|private|protected|static|void|int|float|double|bool|boolean|string|String|new|this|extends|implements|interface|type|package|namespace|using|include|struct|template|typename|override|virtual|final|None|True|False|null|undefined)\b/g;
+  const builtins = /\b(console|log|map|filter|reduce|push|print|len|range|std|cout|cin|printf|scanf|System|out|println)\b/g;
+  const strings = /('.*?'|".*?"|`.*?`)/g;
+  const numbers = /\b(\d+)\b/g;
+  const comments = /(\/\/.*$|#.*$|\/\*[\s\S]*?\*\/)/gm;
 
-    const tokenRegex = /(".*?"|'.*?'|`[\s\S]*?`)|(\/\/.*$|\/\*[\s\S]*?\*\/)|(\b(?:class|public|private|protected|function|const|let|var|if|else|return|import|export|from|async|await|new|this|typeof|interface|type|implements|extends|void|int|float|double|string|bool)\b)|(\b\d+(\.\d+)?\b)/gm;
+  highlighted = highlighted
+    .replace(keywords, '<span class="text-purple-400 font-bold">$1</span>')
+    .replace(builtins, '<span class="text-blue-400">$1</span>')
+    .replace(strings, '<span class="text-green-400">$1</span>')
+    .replace(numbers, '<span class="text-orange-400">$1</span>')
+    .replace(comments, '<span class="text-gray-500 italic">$1</span>');
 
-    return safeCode.replace(tokenRegex, (match, string, comment, keyword, number) => {
-      if (string) return `<span class="text-green-400">${string}</span>`;
-      if (comment) return `<span class="text-gray-500 italic">${comment}</span>`;
-      if (keyword) return `<span class="text-purple-400 font-bold">${keyword}</span>`;
-      if (number) return `<span class="text-orange-400">${number}</span>`;
-      return match;
-    });
-  } catch (e) {
-    console.error("Error highlighting code:", e);
-    return code
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
-  }
+  return highlighted;
 }
 
 const CodeEditor = ({ value, onChange, onRun, readOnly }: { value: string, onChange: (v: string) => void, onRun?: () => void, readOnly?: boolean }) => {
@@ -200,9 +156,9 @@ const CodeEditor = ({ value, onChange, onRun, readOnly }: { value: string, onCha
 };
 
 export default function Dashboard() {
+  const router = useRouter()
+  const { theme, setTheme } = useTheme()
   const [mounted, setMounted] = useState(false)
-  const { theme, setTheme, resolvedTheme } = useTheme()
-  const isDarkMode = mounted && (theme === 'dark' || resolvedTheme === 'dark')
 
   // Estados Globales
   const [loadingProfile, setLoadingProfile] = useState(true)
@@ -235,6 +191,7 @@ export default function Dashboard() {
 
   const chatEndRef = useRef<HTMLDivElement>(null)
 
+  // --- HELPER: RESET FORM ---
   const resetForm = () => {
     setNewCourseTitle('');
     setNewCourseDesc('');
@@ -242,13 +199,16 @@ export default function Dashboard() {
     setEditingCourseId(null);
   }
 
+  // --- CARGA INICIAL ---
   const fetchProfile = useCallback(async (currentUser: any) => {
     try {
       const { data, error } = await supabase.from('profiles').select('*').eq('id', currentUser.id).maybeSingle()
 
       const updates = {
         id: currentUser.id,
+        // Intentamos guardar el email real si existe en auth
         email: currentUser.email,
+        // Si no tiene full_name, usamos el email
         full_name: data?.full_name || currentUser.email?.split('@')[0],
         role: data?.role || 'student',
         updated_at: new Date().toISOString()
@@ -256,14 +216,16 @@ export default function Dashboard() {
 
       if (!data || error) {
         await supabase.from('profiles').upsert(updates)
-        const { data: newData } = await supabase.from('profiles').select('*').eq('id', currentUser.id).single();
-        setProfile(newData);
+        window.location.reload()
+        return
       } else {
-        setProfile(data);
+        // Actualizamos el perfil para asegurar que el email esté sincronizado
+        await supabase.from('profiles').update({ email: currentUser.email }).eq('id', currentUser.id)
       }
 
+      setProfile(data)
       setLoadingProfile(false)
-      fetchCourses(data?.role || 'student', currentUser.id)
+      fetchCourses(data.role, currentUser.id)
     } catch (err) { console.error(err); setLoadingProfile(false) }
   }, [])
 
@@ -271,15 +233,11 @@ export default function Dashboard() {
     setMounted(true)
     const init = async () => {
       const { data } = await supabase.auth.getUser()
-      if (data.user) {
-        setUser(data.user);
-        fetchProfile(data.user);
-      } else {
-        setLoadingProfile(false);
-      }
+      if (!data.user) router.push('/')
+      else { setUser(data.user); fetchProfile(data.user); }
     }
     init()
-  }, [fetchProfile])
+  }, [router, fetchProfile])
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -291,14 +249,14 @@ export default function Dashboard() {
     }
   }, [view, selectedCourse, profile])
 
+  // --- GESTIÓN DE CURSOS ---
   const fetchCourses = async (role: string | undefined, userId: string) => {
     try {
       let allData: any[] = []
       const { data: dataWithProfiles, error: errorProfiles } = await supabase.from('courses').select('*, profiles(full_name)')
 
-      if (!errorProfiles && dataWithProfiles) {
-        allData = dataWithProfiles
-      } else {
+      if (!errorProfiles && dataWithProfiles) allData = dataWithProfiles
+      else {
         const { data: rawData } = await supabase.from('courses').select('*')
         allData = rawData || []
       }
@@ -318,42 +276,40 @@ export default function Dashboard() {
     } catch (e) { console.error("Error fetching courses:", e) }
   }
 
+  // --- GESTIÓN DE ESTUDIANTES (CORREGIDO) ---
   const fetchEnrolledStudents = async (courseId: number) => {
     setLoadingStudents(true)
     try {
-      const { data: enrollData, error: enrollError } = await supabase
-        .from('enrollments')
-        .select('student_id')
-        .eq('course_id', courseId);
+      // 1. Obtener IDs de inscripciones
+      const { data: enrollments } = await supabase.from('enrollments').select('student_id').eq('course_id', courseId)
 
-      if (enrollError) throw enrollError;
-
-      if (!enrollData || enrollData.length === 0) {
+      if (!enrollments || enrollments.length === 0) {
         setEnrolledStudents([]);
-        setLoadingStudents(false);
-        return;
+        setLoadingStudents(false)
+        return
       }
 
-      const studentIds: string[] = enrollData.map((e: Enrollment) => e.student_id);
+      const ids = enrollments.map(e => e.student_id)
 
-      const { data: profilesData, error: profilesError } = await supabase
-        .from('profiles')
-        .select('*')
-        .in('id', studentIds);
+      // 2. Obtener perfiles de esos IDs
+      const { data: profiles, error } = await supabase.from('profiles').select('*').in('id', ids)
 
-      if (profilesError) throw profilesError;
+      if (error) throw error;
 
-      const students: Profile[] = studentIds.map((id: string) => {
-        const foundProfile = profilesData?.find((p: Profile) => p.id === id);
-        return foundProfile || {
-          id: id,
-          full_name: 'Estudiante (Sin Perfil)',
-          email: 'No disponible',
-          role: 'student'
+      // 3. Mezclar datos. Si el perfil no existe (raro), creamos un objeto dummy para que no falle.
+      // Importante: No usamos "placeholders" de carga, mostramos lo que hay.
+      const finalStudents = ids.map(id => {
+        const found = profiles?.find(p => p.id === id);
+        if (found) return found;
+        return {
+          id,
+          role: 'student',
+          full_name: 'Estudiante Desconocido',
+          email: 'No disponible'
         } as Profile;
-      });
+      })
 
-      setEnrolledStudents(students);
+      setEnrolledStudents(finalStudents)
 
     } catch (e) {
       console.error("Error fetching students:", e)
@@ -367,6 +323,7 @@ export default function Dashboard() {
     setCourseSessions(data || [])
   }
 
+  // --- CHAT IA ---
   const fetchChatHistory = async (courseId: number) => {
     if (!user) return
     setAiLoading(true)
@@ -486,27 +443,31 @@ export default function Dashboard() {
     return fmt;
   }
 
+  // --- ACCIONES CRUD MEJORADAS (SOLUCIÓN A TU ERROR) ---
+
   const createOrUpdateCourse = async () => {
     if (!user) return;
     const payload = { title: newCourseTitle, description: newCourseDesc, category: newCourseCategory };
 
     try {
       if (editingCourseId) {
+        // Actualización (UPDATE)
         const { error } = await supabase.from('courses').update(payload).eq('id', editingCourseId);
         if (error) throw error;
 
-        const updated = { ...selectedCourse, ...payload } as Course;
+        // Actualizar estado local inmediatamente
         setMyCourses(prev => prev.map(c => c.id === editingCourseId ? { ...c, ...payload } : c));
         setCourses(prev => prev.map(c => c.id === editingCourseId ? { ...c, ...payload } : c));
 
         if (selectedCourse?.id === editingCourseId) {
-          setSelectedCourse(updated);
+          setSelectedCourse({ ...selectedCourse, ...payload });
         }
         alert("Curso actualizado correctamente.");
       } else {
+        // Creación (CREATE)
         const { error } = await supabase.from('courses').insert({ ...payload, created_by: user.id, is_published: true });
         if (error) throw error;
-        fetchCourses('teacher', user.id);
+        fetchCourses('teacher', user.id); // Recargar lista para obtener ID nuevo
       }
 
       resetForm();
@@ -516,38 +477,51 @@ export default function Dashboard() {
     }
   }
 
+  // --- ELIMINACIÓN DE CURSO "FUERZA BRUTA" ---
+  // Esta función elimina manualmente todos los registros dependientes 
+  // para evitar errores de Foreign Key si la BD no tiene ON DELETE CASCADE configurado.
   const handleDeleteCourse = async (courseId: number, e: React.MouseEvent) => {
     e.stopPropagation();
     if (!confirm("⚠️ ADVERTENCIA: ¿Estás seguro de eliminar este curso?\nSe borrarán permanentemente todos los estudiantes inscritos, chats, sesiones y tareas.")) return;
 
     try {
-      console.log("Iniciando eliminación en cascada...");
-
-      interface AiSession {
-        id: number;
-      }
-      const { data: aiSessions }: { data: AiSession[] | null } = await supabase.from('ai_sessions').select('id').eq('course_id', courseId);
-      const aiSessionIds: number[] = aiSessions?.map((s: AiSession) => s.id) || [];
-
+      // 1. Obtener Sesiones de IA para borrar sus mensajes primero
+      const { data: aiSessions } = await supabase.from('ai_sessions').select('id').eq('course_id', courseId);
+      const aiSessionIds = aiSessions?.map(s => s.id) || [];
       if (aiSessionIds.length > 0) {
+        console.log("Eliminando mensajes de IA...");
         await supabase.from('ai_messages').delete().in('session_id', aiSessionIds);
+        console.log("Eliminando sesiones de IA...");
+        await supabase.from('ai_sessions').delete().eq('course_id', courseId);
       }
 
-      await supabase.from('ai_sessions').delete().eq('course_id', courseId);
-
+      // 2. Borrar Mensajes del Chat General
+      console.log("Eliminando chat del curso...");
       await supabase.from('chat_messages').delete().eq('course_id', courseId);
+
+      // 3. Borrar Sesiones en Vivo
+      console.log("Eliminando sesiones en vivo...");
       await supabase.from('sessions').delete().eq('course_id', courseId);
+
+      // 4. Borrar Tutorías
+      console.log("Eliminando tutorías...");
       await supabase.from('tutoring_sessions').delete().eq('course_id', courseId);
 
-      const { error: enrollError }: { error: any } = await supabase.from('enrollments').delete().eq('course_id', courseId);
-      if (enrollError) console.error("Error borrando enrollments:", enrollError);
+      // 5. Borrar Inscripciones (Enrollments)
+      console.log("Eliminando inscripciones...");
+      await supabase.from('enrollments').delete().eq('course_id', courseId);
 
-      const { error: courseError }: { error: any } = await supabase.from('courses').delete().eq('id', courseId);
-      if (courseError) throw courseError;
+      // 6. Finalmente, borrar el Curso
+      console.log("Eliminando curso...");
+      const { error } = await supabase.from('courses').delete().eq('id', courseId);
 
-      setMyCourses((prev: Course[]) => prev.filter((c: Course) => c.id !== courseId));
-      setCourses((prev: Course[]) => prev.filter((c: Course) => c.id !== courseId));
+      if (error) throw error;
 
+      // Actualizar UI
+      setMyCourses(prev => prev.filter(c => c.id !== courseId));
+      setCourses(prev => prev.filter(c => c.id !== courseId));
+
+      // Si estábamos viendo ese curso, volver a la lista
       if (selectedCourse?.id === courseId) {
         setView('courses');
         setSelectedCourse(null);
@@ -556,7 +530,7 @@ export default function Dashboard() {
 
     } catch (e: any) {
       console.error("Error detallado:", e);
-      alert("Error al eliminar: " + (e.message || JSON.stringify(e)));
+      alert("Ocurrió un error al eliminar: " + e.message + "\nRevisa la consola para más detalles.");
     }
   }
 
@@ -570,11 +544,12 @@ export default function Dashboard() {
 
   const handleEditCourse = (course: Course, e: React.MouseEvent) => {
     e.stopPropagation();
+    // Cargar datos en el formulario
     setNewCourseTitle(course.title);
     setNewCourseDesc(course.description);
     setNewCourseCategory(course.category);
     setEditingCourseId(course.id);
-    setView('create');
+    setView('create'); // Ir a la vista de creación que ahora funciona como edición
   }
 
   const generateSyllabus = async () => {
@@ -595,28 +570,16 @@ export default function Dashboard() {
   }
 
   if (!mounted) return null
-  if (loadingProfile && user) return <div className="h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-950"><RefreshCw className="animate-spin text-indigo-600 w-10 h-10" /></div>
-
-  if (!user && !loadingProfile) return (
-    <div className="h-screen flex flex-col items-center justify-center bg-gray-50 dark:bg-gray-950 p-4">
-      <GraduationCap className="w-16 h-16 text-indigo-600 mb-4" />
-      <h1 className="text-2xl font-bold mb-2 dark:text-white">Bienvenido a E-Learning</h1>
-      <p className="text-gray-500 mb-6 text-center">Para continuar, necesitas autenticarte.</p>
-      <button onClick={() => supabase.auth.signInWithOAuth({ provider: 'google' })} className="bg-white border text-gray-700 px-6 py-3 rounded-xl font-bold hover:bg-gray-50 flex items-center gap-2">
-        <User className="w-4 h-4" /> Iniciar Sesión con Supabase
-      </button>
-      <p className="mt-4 text-xs text-gray-400">Si estás en modo prueba, asegúrate de configurar SUPABASE_URL y SUPABASE_KEY en el código.</p>
-    </div>
-  )
+  if (loadingProfile) return <div className="h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-950"><RefreshCw className="animate-spin text-indigo-600 w-10 h-10" /></div>
 
   return (
-    <div className={`flex h-screen bg-[#F8FAFC] ${isDarkMode ? 'dark bg-[#020617] text-gray-200' : 'text-gray-800'} font-sans text-sm md:text-base overflow-hidden transition-colors duration-300`}>
+    <div className="flex h-screen bg-[#F8FAFC] dark:bg-[#020617] text-gray-800 dark:text-gray-200 font-sans text-sm md:text-base overflow-hidden transition-colors duration-300">
 
       {/* SIDEBAR */}
-      <aside className={`w-20 lg:w-64 ${isDarkMode ? 'bg-[#0f172a] border-gray-800' : 'bg-white border-gray-200'} border-r flex flex-col z-20 shadow-xl`}>
-        <div className={`h-16 flex items-center justify-center lg:justify-start lg:px-6 border-b ${isDarkMode ? 'border-gray-800' : 'border-gray-100'} gap-3`}>
+      <aside className="w-20 lg:w-64 bg-white dark:bg-[#0f172a] border-r border-gray-200 dark:border-gray-800 flex flex-col z-20 shadow-xl">
+        <div className="h-16 flex items-center justify-center lg:justify-start lg:px-6 border-b dark:border-gray-800 gap-3">
           <div className="bg-gradient-to-tr from-indigo-600 to-violet-500 p-2 rounded-lg text-white shadow-lg"><GraduationCap size={20} /></div>
-          <span className={`font-bold text-xl hidden lg:block tracking-tight ${isDarkMode ? 'text-white' : 'text-gray-800'}`}>E-Learning</span>
+          <span className="font-bold text-xl dark:text-white hidden lg:block tracking-tight">E-Learning</span>
         </div>
 
         <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
@@ -630,7 +593,7 @@ export default function Dashboard() {
           </button>
         </nav>
 
-        <div className={`p-4 border-t ${isDarkMode ? 'border-gray-800' : 'border-gray-100'} space-y-2`}>
+        <div className="p-4 border-t dark:border-gray-800 space-y-2">
           <div className="flex items-center gap-3 px-2 mb-2">
             <div className="w-8 h-8 rounded-full bg-indigo-100 dark:bg-indigo-900 text-indigo-700 dark:text-indigo-300 flex items-center justify-center font-bold text-xs">{profile?.full_name?.[0]}</div>
             <div className="hidden lg:block overflow-hidden">
@@ -639,8 +602,8 @@ export default function Dashboard() {
             </div>
           </div>
           <div className="flex gap-2">
-            <button onClick={() => setTheme(isDarkMode ? 'light' : 'dark')} className={`flex-1 p-2 rounded-lg ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700' : 'bg-gray-100 hover:bg-gray-200'} flex justify-center`}><Sun className={`w-4 h-4 ${isDarkMode ? 'hidden' : 'block'}`} /><Moon className={`w-4 h-4 ${isDarkMode ? 'block' : 'hidden'}`} /></button>
-            <button onClick={() => supabase.auth.signOut().then(() => window.location.reload())} className="flex-1 p-2 rounded-lg bg-red-50 dark:bg-red-900/20 text-red-500 hover:bg-red-100 flex justify-center"><LogOut className="w-4 h-4" /></button>
+            <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} className="flex-1 p-2 rounded-lg bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 flex justify-center"><Sun className="w-4 h-4 hidden dark:block" /><Moon className="w-4 h-4 block dark:hidden" /></button>
+            <button onClick={() => supabase.auth.signOut().then(() => router.push('/'))} className="flex-1 p-2 rounded-lg bg-red-50 dark:bg-red-900/20 text-red-500 hover:bg-red-100 flex justify-center"><LogOut className="w-4 h-4" /></button>
           </div>
         </div>
       </aside>
@@ -651,11 +614,11 @@ export default function Dashboard() {
         {/* VISTA: MIS CURSOS */}
         {view === 'courses' && (
           <div className="flex-1 overflow-y-auto p-6 lg:p-10">
-            <h1 className={`text-3xl font-bold mb-2 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Bienvenido de nuevo, {profile?.full_name?.split(' ')[0]}</h1>
+            <h1 className="text-3xl font-bold dark:text-white mb-2">Bienvenido de nuevo, {profile?.full_name?.split(' ')[0]}</h1>
             <p className="text-gray-500 mb-8">Continúa donde lo dejaste.</p>
 
             {myCourses.length === 0 ? (
-              <div className={`text-center py-20 rounded-2xl border border-dashed ${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}>
+              <div className="text-center py-20 bg-white dark:bg-gray-800 rounded-2xl border border-dashed dark:border-gray-700">
                 <Book className="w-16 h-16 text-gray-300 mx-auto mb-4" />
                 <p className="text-gray-500">No estás inscrito en ningún curso.</p>
                 <button onClick={() => { resetForm(); setView('create'); }} className="mt-4 text-indigo-600 font-bold hover:underline">Ir a Explorar Cursos</button>
@@ -664,7 +627,7 @@ export default function Dashboard() {
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {myCourses.map(c => (
                   <div key={c.id} onClick={() => { setSelectedCourse(c); setView('course_detail'); fetchChatHistory(c.id); fetchSessions(c.id); if (profile?.role === 'teacher') { try { const parsed = JSON.parse(c.syllabus || '[]'); setSyllabusItems(Array.isArray(parsed) ? parsed : []); } catch { setSyllabusItems([]); } } }}
-                    className={`group rounded-2xl border overflow-hidden cursor-pointer hover:shadow-2xl hover:-translate-y-1 transition-all duration-300 relative ${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}>
+                    className="group bg-white dark:bg-gray-800 rounded-2xl border dark:border-gray-700 overflow-hidden cursor-pointer hover:shadow-2xl hover:-translate-y-1 transition-all duration-300 relative">
                     <div className={`h-36 p-6 flex flex-col justify-between relative overflow-hidden
                       ${c.category === 'math' ? 'bg-gradient-to-br from-blue-600 to-cyan-500' :
                         c.category === 'programming' ? 'bg-gradient-to-br from-slate-800 to-black' :
@@ -673,12 +636,11 @@ export default function Dashboard() {
                       <div className="absolute top-0 right-0 p-4 opacity-10 transform translate-x-4 -translate-y-4">
                         {c.category === 'math' ? <Calculator size={100} color="white" /> : c.category === 'programming' ? <Terminal size={100} color="white" /> : c.category === 'letters' ? <Feather size={100} color="white" /> : <Book size={100} color="white" />}
                       </div>
-
                       <span className="self-end bg-white/20 backdrop-blur text-white text-[10px] px-2 py-0.5 rounded-full uppercase font-bold tracking-wider border border-white/10">{c.category}</span>
                       <h3 className="text-white font-bold text-xl drop-shadow-md z-10">{c.title}</h3>
                     </div>
                     <div className="p-5">
-                      <p className={`text-sm line-clamp-2 mb-4 h-10 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{c.description}</p>
+                      <p className="text-gray-500 dark:text-gray-400 text-sm line-clamp-2 mb-4 h-10">{c.description}</p>
                       <div className="flex items-center justify-between mt-2">
                         <div className="flex items-center gap-2 text-xs font-medium text-gray-400">
                           <User className="w-3 h-3" /> {c.profiles?.full_name || 'Profesor'}
@@ -687,10 +649,10 @@ export default function Dashboard() {
                         {/* BOTONES DE EDICIÓN PARA PROFESOR */}
                         {profile?.role === 'teacher' && (
                           <div className="flex gap-2">
-                            <button onClick={(e) => handleEditCourse(c, e)} className={`p-2 rounded-full transition-colors ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'} text-indigo-500`} title="Editar">
+                            <button onClick={(e) => handleEditCourse(c, e)} className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full text-indigo-500 transition-colors" title="Editar">
                               <Edit className="w-4 h-4" />
                             </button>
-                            <button onClick={(e) => handleDeleteCourse(c.id, e)} className={`p-2 rounded-full transition-colors ${isDarkMode ? 'hover:bg-red-900/20' : 'hover:bg-red-50'} text-red-500`} title="Eliminar">
+                            <button onClick={(e) => handleDeleteCourse(c.id, e)} className="p-2 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-full text-red-500 transition-colors" title="Eliminar">
                               <Trash2 className="w-4 h-4" />
                             </button>
                           </div>
@@ -704,12 +666,13 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* VISTA: DETALLE DEL CURSO */}
+        {/* VISTA: DETALLE DEL CURSO (AULA VIRTUAL) */}
         {view === 'course_detail' && selectedCourse && (
           <div className="flex-1 flex flex-col h-screen">
-            <header className={`h-16 border-b flex items-center justify-between px-6 shrink-0 z-10 ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+            {/* Header del Curso */}
+            <header className="h-16 bg-white dark:bg-gray-900 border-b dark:border-gray-800 flex items-center justify-between px-6 shrink-0 z-10">
               <div className="flex items-center gap-4">
-                <button onClick={() => setView('courses')} className={`p-2 rounded-full transition-colors ${isDarkMode ? 'hover:bg-gray-800' : 'hover:bg-gray-100'}`}><ArrowLeft className="w-5 h-5" /></button>
+                <button onClick={() => setView('courses')} className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-colors"><ArrowLeft className="w-5 h-5" /></button>
                 <div>
                   <h2 className="font-bold text-lg leading-none">{selectedCourse.title}</h2>
                   <span className="text-xs text-gray-500 capitalize">{selectedCourse.category}</span>
@@ -728,26 +691,31 @@ export default function Dashboard() {
             </header>
 
             <div className="flex-1 flex overflow-hidden">
-              <div className={`flex-1 flex flex-col relative ${isDarkMode ? 'bg-[#0b1120]' : 'bg-gray-50'}`}>
+              {/* ZONA IZQUIERDA: CHAT / CONTENIDO */}
+              <div className="flex-1 flex flex-col bg-gray-50 dark:bg-[#0b1120] relative">
                 {profile?.role === 'teacher' ? (
+                  // VISTA PROFESOR (Gestión)
                   <div className="flex-1 p-8 overflow-y-auto grid grid-cols-1 xl:grid-cols-2 gap-8">
-                    <div className={`p-6 rounded-2xl shadow-sm border ${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}>
+                    <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border dark:border-gray-700">
                       <div className="flex justify-between items-center mb-4">
                         <h3 className="font-bold text-lg flex items-center gap-2"><Users className="text-indigo-500" /> Estudiantes ({enrolledStudents.length})</h3>
-                        <button onClick={() => fetchEnrolledStudents(selectedCourse.id)} disabled={loadingStudents} className={`p-1.5 rounded-lg transition-colors text-gray-500 hover:text-indigo-600 ${isDarkMode ? 'bg-gray-700 hover:bg-indigo-900/30' : 'bg-gray-100 hover:bg-gray-100'}`} title="Actualizar lista">
+                        <button onClick={() => fetchEnrolledStudents(selectedCourse.id)} disabled={loadingStudents} className="p-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 hover:bg-indigo-100 dark:hover:bg-indigo-900/30 text-gray-500 hover:text-indigo-600 transition-colors" title="Actualizar lista">
                           <RefreshCw className={`w-3.5 h-3.5 ${loadingStudents ? 'animate-spin' : ''}`} />
                         </button>
                       </div>
                       <div className="max-h-96 overflow-y-auto space-y-2">
                         {enrolledStudents.map(st => (
-                          <div key={st.id} className={`flex items-center gap-3 p-3 rounded-xl transition-colors border-b ${isDarkMode ? 'hover:bg-gray-700/50 border-gray-800/50' : 'hover:bg-gray-50 border-gray-100'}`}>
+                          <div key={st.id} className="flex items-center gap-3 p-3 hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded-xl transition-colors border-b dark:border-gray-800/50">
                             <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 text-white flex items-center justify-center font-bold text-sm shrink-0">
                               {st.email ? st.email[0].toUpperCase() : (st.full_name ? st.full_name[0].toUpperCase() : 'U')}
                             </div>
                             <div className="flex flex-col overflow-hidden">
-                              <span className={`text-sm font-bold truncate ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                              {/* CAMBIO: PRIORIZAR NOMBRE COMPLETO */}
+                              <span className="text-sm font-bold text-gray-800 dark:text-gray-200 truncate">
                                 {st.full_name || "Estudiante sin nombre"}
                               </span>
+
+                              {/* EMAIL SECUNDARIO */}
                               {st.email && st.email !== 'No disponible' ? (
                                 <span className="text-xs text-gray-500 flex items-center gap-1.5 truncate">
                                   <Mail className="w-3 h-3 text-indigo-400" />
@@ -767,7 +735,7 @@ export default function Dashboard() {
                       </div>
                     </div>
 
-                    <div className={`p-6 rounded-2xl shadow-sm border flex flex-col ${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}>
+                    <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border dark:border-gray-700 flex flex-col">
                       <div className="flex justify-between items-center mb-4">
                         <h3 className="font-bold text-lg flex items-center gap-2"><ListChecks className="text-green-500" /> Plan de Estudios</h3>
                         <button onClick={generateSyllabus} className="text-xs bg-green-50 text-green-600 px-3 py-1.5 rounded-lg border border-green-200 font-bold hover:bg-green-100 transition-colors flex items-center gap-1"><Bot className="w-3 h-3" /> Generar con IA</button>
@@ -777,7 +745,7 @@ export default function Dashboard() {
                           <div key={idx} className="flex gap-2 items-start group">
                             <span className="mt-3 text-gray-300"><GripVertical className="w-4 h-4" /></span>
                             <textarea value={item} onChange={(e) => { const n = [...syllabusItems]; n[idx] = e.target.value; setSyllabusItems(n) }}
-                              className={`flex-1 border rounded-lg p-3 text-sm resize-none focus:ring-1 focus:ring-indigo-500 outline-none ${isDarkMode ? 'bg-gray-900 border-gray-700' : 'bg-gray-50 border-gray-200'}`} rows={1} />
+                              className="flex-1 bg-gray-50 dark:bg-gray-900 border dark:border-gray-700 rounded-lg p-3 text-sm resize-none focus:ring-1 focus:ring-indigo-500 outline-none" rows={1} />
                             <button onClick={() => { const n = syllabusItems.filter((_, i) => i !== idx); setSyllabusItems(n) }} className="mt-3 text-red-400 opacity-0 group-hover:opacity-100 hover:text-red-600 transition-opacity"><X className="w-4 h-4" /></button>
                           </div>
                         ))}
@@ -787,6 +755,7 @@ export default function Dashboard() {
                     </div>
                   </div>
                 ) : (
+                  // VISTA ESTUDIANTE (Chat IA)
                   <>
                     <div className="flex-1 overflow-y-auto p-4 md:p-8 space-y-6 scroll-smooth">
                       {messages.length === 0 && (
@@ -809,20 +778,24 @@ export default function Dashboard() {
                             <div className="flex flex-col gap-2 w-full">
                               <div className={`p-4 md:p-5 rounded-2xl shadow-sm leading-relaxed text-[15px] ${msg.role === 'user'
                                 ? 'bg-indigo-600 text-white rounded-tr-none'
-                                : `${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} border rounded-tl-none`
+                                : 'bg-white dark:bg-gray-800 border dark:border-gray-700 rounded-tl-none'
                                 }`}>
                                 {msg.role === 'model' ? renderRichMessage(msg.content, selectedCourse.category) : msg.content}
                               </div>
+
+                              {/* BOTONES DE OPCIONES (INTERACTIVOS) */}
                               {msg.options && (
                                 <div className="flex flex-wrap gap-2 mt-1 animate-in fade-in zoom-in duration-300">
                                   {msg.options.map((opt, idx) => (
                                     <button key={idx} onClick={() => handleSendMessage(opt)}
-                                      className={`px-4 py-2 border-2 rounded-xl text-sm font-bold shadow-sm transition-all transform hover:-translate-y-0.5 active:scale-95 ${isDarkMode ? 'bg-gray-800 border-indigo-900/40 text-indigo-400 hover:bg-indigo-900/20' : 'bg-white border-indigo-100 text-indigo-600 hover:bg-indigo-50 hover:border-indigo-300'}`}>
+                                      className="px-4 py-2 bg-white dark:bg-gray-800 border-2 border-indigo-100 dark:border-indigo-900/40 text-indigo-600 dark:text-indigo-400 rounded-xl text-sm font-bold shadow-sm hover:bg-indigo-50 dark:hover:bg-indigo-900/20 hover:border-indigo-300 transition-all transform hover:-translate-y-0.5 active:scale-95">
                                       {opt}
                                     </button>
                                   ))}
                                 </div>
                               )}
+
+                              {/* EDITOR DE CÓDIGO INCRUSTADO (Solo si se pidió) */}
                               {msg.isCodeRequest && (
                                 <div className="mt-2 w-full">
                                   <CodeEditor
@@ -839,10 +812,12 @@ export default function Dashboard() {
                       ))}
                       <div ref={chatEndRef} className="h-4" />
                     </div>
+
+                    {/* INPUT CHAT (Solo si no hay editor activo) */}
                     {!codeEditorVisible && (
-                      <div className={`p-4 border-t z-20 ${isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-100'}`}>
-                        <div className={`max-w-3xl mx-auto flex gap-2 p-2 rounded-full border shadow-inner focus-within:ring-2 focus-within:ring-indigo-500 transition-all ${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-gray-100 border-gray-200'}`}>
-                          <input className={`flex-1 bg-transparent px-4 outline-none text-sm placeholder:text-gray-400 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}
+                      <div className="p-4 bg-white dark:bg-gray-900 border-t dark:border-gray-800 z-20">
+                        <div className="max-w-3xl mx-auto flex gap-2 bg-gray-100 dark:bg-gray-800 p-2 rounded-full border dark:border-gray-700 shadow-inner focus-within:ring-2 focus-within:ring-indigo-500 transition-all">
+                          <input className="flex-1 bg-transparent px-4 outline-none text-sm dark:text-white placeholder:text-gray-400"
                             placeholder="Escribe tu mensaje..." value={inputMsg} onChange={e => setInputMsg(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSendMessage()} disabled={aiLoading} />
                           <button onClick={() => handleSendMessage()} disabled={!inputMsg.trim() || aiLoading}
                             className="w-10 h-10 bg-indigo-600 rounded-full text-white flex items-center justify-center hover:bg-indigo-700 disabled:opacity-50 disabled:hover:bg-indigo-600 transition-all shadow-md">
@@ -855,8 +830,8 @@ export default function Dashboard() {
                 )}
               </div>
 
-              {/* ZONA DERECHA */}
-              <div className={`w-80 border-l hidden xl:flex flex-col shrink-0 ${isDarkMode ? 'bg-[#0f172a] border-gray-800' : 'bg-white border-gray-200'}`}>
+              {/* ZONA DERECHA: PANELES AUXILIARES */}
+              <div className="w-80 bg-white dark:bg-[#0f172a] border-l dark:border-gray-800 hidden xl:flex flex-col shrink-0">
                 <div className="p-6 overflow-y-auto flex-1">
                   <h3 className="font-bold text-sm uppercase text-gray-400 mb-4 flex items-center gap-2"><Video className="w-4 h-4" /> Sesiones en Vivo</h3>
                   {profile?.role === 'teacher' && selectedCourse.created_by === user?.id && (
@@ -864,11 +839,11 @@ export default function Dashboard() {
                   )}
 
                   {showSessionForm && (
-                    <div className={`p-4 rounded-xl border mb-4 animate-in slide-in-from-top-2 ${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-gray-50 border-gray-200'}`}>
+                    <div className="bg-gray-50 dark:bg-gray-800 p-4 rounded-xl border dark:border-gray-700 mb-4 animate-in slide-in-from-top-2">
                       <div className="space-y-2">
-                        <input type="date" className={`w-full text-xs p-2 rounded border ${isDarkMode ? 'bg-gray-900 border-gray-600' : 'bg-white border-gray-300'}`} onChange={e => setSessionData({ ...sessionData, date: e.target.value })} />
-                        <input type="time" className={`w-full text-xs p-2 rounded border ${isDarkMode ? 'bg-gray-900 border-gray-600' : 'bg-white border-gray-300'}`} onChange={e => setSessionData({ ...sessionData, time: e.target.value })} />
-                        <input type="url" placeholder="Link (Zoom/Meet)" className={`w-full text-xs p-2 rounded border ${isDarkMode ? 'bg-gray-900 border-gray-600' : 'bg-white border-gray-300'}`} onChange={e => setSessionData({ ...sessionData, link: e.target.value })} />
+                        <input type="date" className="w-full text-xs p-2 rounded border dark:bg-gray-900 dark:border-gray-600" onChange={e => setSessionData({ ...sessionData, date: e.target.value })} />
+                        <input type="time" className="w-full text-xs p-2 rounded border dark:bg-gray-900 dark:border-gray-600" onChange={e => setSessionData({ ...sessionData, time: e.target.value })} />
+                        <input type="url" placeholder="Link (Zoom/Meet)" className="w-full text-xs p-2 rounded border dark:bg-gray-900 dark:border-gray-600" onChange={e => setSessionData({ ...sessionData, link: e.target.value })} />
                         <button onClick={async () => { await supabase.from('sessions').insert({ course_id: selectedCourse.id, ...sessionData }); setShowSessionForm(false); fetchSessions(selectedCourse.id) }} className="w-full bg-indigo-600 text-white py-1.5 rounded text-xs font-bold">Crear</button>
                       </div>
                     </div>
@@ -877,10 +852,10 @@ export default function Dashboard() {
                   <div className="space-y-3">
                     {courseSessions.length === 0 && <p className="text-gray-400 text-xs italic text-center py-4">No hay sesiones próximas.</p>}
                     {courseSessions.map((s, i) => (
-                      <div key={i} className={`p-4 rounded-xl border ${isDarkMode ? 'bg-gradient-to-br from-indigo-900/10 to-purple-900/10 border-indigo-500/20' : 'bg-gradient-to-br from-indigo-50 to-purple-50 border-indigo-100'}`}>
+                      <div key={i} className="p-4 rounded-xl bg-gradient-to-br from-indigo-50 to-purple-50 dark:from-indigo-900/10 dark:to-purple-900/10 border border-indigo-100 dark:border-indigo-500/20">
                         <div className="flex justify-between items-start mb-2">
-                          <span className={`font-bold text-sm ${isDarkMode ? 'text-indigo-300' : 'text-indigo-900'}`}>{s.date}</span>
-                          <span className={`text-xs px-2 py-0.5 rounded border ${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}>{s.time}</span>
+                          <span className="font-bold text-indigo-900 dark:text-indigo-300 text-sm">{s.date}</span>
+                          <span className="text-xs bg-white dark:bg-gray-800 px-2 py-0.5 rounded border dark:border-gray-700">{s.time}</span>
                         </div>
                         <a href={s.link} target="_blank" className="text-xs flex items-center justify-center gap-1 w-full py-1.5 bg-indigo-600 text-white rounded-lg font-bold hover:bg-indigo-700 transition-colors"><ExternalLink className="w-3 h-3" /> Unirse</a>
                       </div>
@@ -895,27 +870,27 @@ export default function Dashboard() {
         {/* VISTA: CREAR / EDITAR / EXPLORAR */}
         {view === 'create' && (
           <div className="flex-1 overflow-y-auto p-6 flex justify-center items-start pt-10">
-            <div className={`w-full max-w-4xl rounded-3xl shadow-xl border p-8 ${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}>
-              <div className={`flex justify-between items-center mb-8 pb-4 border-b ${isDarkMode ? 'border-gray-700' : 'border-gray-100'}`}>
+            <div className="w-full max-w-4xl bg-white dark:bg-gray-800 rounded-3xl shadow-xl border dark:border-gray-700 p-8">
+              <div className="flex justify-between items-center mb-8 pb-4 border-b dark:border-gray-700">
                 <div>
-                  <h2 className={`text-2xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{profile?.role === 'teacher' ? (editingCourseId ? 'Editar Curso' : 'Crear Nuevo Curso') : 'Explorar Cursos Disponibles'}</h2>
+                  <h2 className="text-2xl font-bold dark:text-white">{profile?.role === 'teacher' ? (editingCourseId ? 'Editar Curso' : 'Crear Nuevo Curso') : 'Explorar Cursos Disponibles'}</h2>
                   <p className="text-gray-500 text-sm mt-1">{profile?.role === 'teacher' ? 'Comparte tu conocimiento con el mundo.' : 'Encuentra tu próxima aventura de aprendizaje.'}</p>
                 </div>
-                <button onClick={() => { setView('courses'); resetForm(); }} className={`w-8 h-8 rounded-full flex items-center justify-center ${isDarkMode ? 'bg-gray-700 hover:bg-gray-600' : 'bg-gray-100 hover:bg-gray-200'}`}><X className="w-4 h-4" /></button>
+                <button onClick={() => { setView('courses'); resetForm(); }} className="w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center hover:bg-gray-200"><X className="w-4 h-4" /></button>
               </div>
 
               {profile?.role === 'teacher' ? (
                 <>
                   <div className="space-y-6 max-w-lg mx-auto mb-10">
                     <div>
-                      <label className={`block text-sm font-bold mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>Título del Curso</label>
-                      <input value={newCourseTitle} onChange={e => setNewCourseTitle(e.target.value)} className={`w-full px-4 py-3 rounded-xl border focus:ring-2 focus:ring-indigo-500 outline-none transition-shadow ${isDarkMode ? 'bg-gray-900 border-gray-700' : 'bg-white border-gray-300'}`} placeholder="Ej: Cálculo Avanzado I" />
+                      <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Título del Curso</label>
+                      <input value={newCourseTitle} onChange={e => setNewCourseTitle(e.target.value)} className="w-full px-4 py-3 rounded-xl border dark:bg-gray-900 dark:border-gray-700 focus:ring-2 focus:ring-indigo-500 outline-none transition-shadow" placeholder="Ej: Cálculo Avanzado I" />
                     </div>
                     <div>
-                      <label className={`block text-sm font-bold mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>Categoría</label>
+                      <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Categoría</label>
                       <div className="grid grid-cols-2 gap-3">
                         {['math', 'programming', 'letters', 'other'].map((cat: any) => (
-                          <button key={cat} onClick={() => setNewCourseCategory(cat)} className={`p-3 rounded-xl border text-sm font-bold capitalize transition-all flex items-center justify-center gap-2 ${newCourseCategory === cat ? 'bg-indigo-600 text-white border-indigo-600 ring-2 ring-indigo-200' : isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-50'}`}>
+                          <button key={cat} onClick={() => setNewCourseCategory(cat)} className={`p-3 rounded-xl border text-sm font-bold capitalize transition-all flex items-center justify-center gap-2 ${newCourseCategory === cat ? 'bg-indigo-600 text-white border-indigo-600 ring-2 ring-indigo-200' : 'hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
                             {cat === 'math' ? <Calculator className="w-4 h-4" /> : cat === 'programming' ? <Terminal className="w-4 h-4" /> : cat === 'letters' ? <Feather className="w-4 h-4" /> : <Book className="w-4 h-4" />}
                             {cat === 'math' ? 'Matemáticas' : cat === 'letters' ? 'Letras' : cat === 'programming' ? 'Programación' : 'Otros'}
                           </button>
@@ -923,13 +898,13 @@ export default function Dashboard() {
                       </div>
                     </div>
                     <div>
-                      <label className={`block text-sm font-bold mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>Descripción</label>
-                      <textarea value={newCourseDesc} onChange={e => setNewCourseDesc(e.target.value)} className={`w-full px-4 py-3 rounded-xl border h-32 resize-none focus:ring-2 focus:ring-indigo-500 outline-none ${isDarkMode ? 'bg-gray-900 border-gray-700' : 'bg-white border-gray-300'}`} placeholder="¿De qué trata este curso?" />
+                      <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Descripción</label>
+                      <textarea value={newCourseDesc} onChange={e => setNewCourseDesc(e.target.value)} className="w-full px-4 py-3 rounded-xl border h-32 resize-none dark:bg-gray-900 dark:border-gray-700 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="¿De qué trata este curso?" />
                     </div>
 
                     <div className="flex gap-4">
                       {editingCourseId && (
-                        <button onClick={resetForm} className={`flex-1 py-4 rounded-xl font-bold text-lg transition-colors flex items-center justify-center gap-2 ${isDarkMode ? 'bg-gray-800 text-gray-300 hover:bg-gray-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                        <button onClick={resetForm} className="flex-1 py-4 bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 rounded-xl font-bold text-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors flex items-center justify-center gap-2">
                           <Ban className="w-5 h-5" /> Cancelar
                         </button>
                       )}
@@ -939,16 +914,17 @@ export default function Dashboard() {
                     </div>
                   </div>
 
-                  <div className={`pt-8 border-t ${isDarkMode ? 'border-gray-700' : 'border-gray-100'}`}>
-                    <h3 className="font-bold text-lg mb-4 text-gray-500">Todos los Cursos en la Plataforma ({courses.length})</h3>
+                  {/* VISTA EXPLORE PARA PROFESORES (PARA QUE VEAN LOS CURSOS EXISTENTES) */}
+                  <div className="pt-8 border-t dark:border-gray-700">
+                    <h3 className="font-bold text-lg mb-4 text-gray-500 dark:text-gray-400">Todos los Cursos en la Plataforma ({courses.length})</h3>
                     <div className="grid grid-cols-1 gap-3 max-h-64 overflow-y-auto">
                       {courses.length === 0 && <p className="text-gray-400 text-sm italic">No se encontraron cursos.</p>}
                       {courses.map(c => (
-                        <div key={c.id} className={`flex items-center justify-between p-3 rounded-lg border transition-colors ${isDarkMode ? 'border-gray-700 hover:bg-gray-800' : 'border-gray-200 hover:bg-gray-50'}`}>
+                        <div key={c.id} className="flex items-center justify-between p-3 rounded-lg border dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
                           <div className="flex items-center gap-3">
                             <div className={`w-2 h-10 rounded-full ${c.category === 'math' ? 'bg-blue-500' : c.category === 'programming' ? 'bg-black dark:bg-white' : c.category === 'letters' ? 'bg-amber-500' : 'bg-indigo-500'}`}></div>
                             <div>
-                              <h4 className={`font-bold text-sm ${isDarkMode ? 'text-gray-200' : 'text-gray-900'}`}>{c.title}</h4>
+                              <h4 className="font-bold text-sm dark:text-gray-200">{c.title}</h4>
                               <p className="text-xs text-gray-500">{c.profiles?.full_name || 'Desconocido'}</p>
                             </div>
                           </div>
@@ -962,13 +938,13 @@ export default function Dashboard() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {courses.length === 0 && <div className="col-span-2 text-center py-10 text-gray-400 italic">No hay nuevos cursos disponibles por ahora.</div>}
                   {courses.map(c => (
-                    <div key={c.id} className={`border p-5 rounded-2xl transition-all flex justify-between items-center group ${isDarkMode ? 'border-gray-700 hover:bg-gray-700/50' : 'border-gray-200 hover:bg-gray-50'}`}>
+                    <div key={c.id} className="border dark:border-gray-700 p-5 rounded-2xl hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-all flex justify-between items-center group">
                       <div>
                         <div className="flex items-center gap-2 mb-1">
                           <span className={`w-2 h-2 rounded-full ${c.category === 'math' ? 'bg-blue-500' : c.category === 'programming' ? 'bg-black dark:bg-white' : c.category === 'letters' ? 'bg-amber-500' : 'bg-indigo-500'}`}></span>
                           <span className="text-xs uppercase font-bold text-gray-400 tracking-wide">{c.category}</span>
                         </div>
-                        <h3 className={`font-bold text-lg group-hover:text-indigo-600 transition-colors ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{c.title}</h3>
+                        <h3 className="font-bold text-lg dark:text-white group-hover:text-indigo-600 transition-colors">{c.title}</h3>
                         <p className="text-sm text-gray-500 line-clamp-1 max-w-[250px]">{c.description}</p>
                         <p className="text-xs text-gray-400 mt-2 flex items-center gap-1"><User className="w-3 h-3" /> {c.profiles?.full_name || 'Profesor'}</p>
                       </div>
@@ -979,7 +955,7 @@ export default function Dashboard() {
                           fetchCourses('student', user.id);
                           setView('courses');
                         } catch (e: any) { alert("Error al inscribirse: " + e.message) }
-                      }} className={`px-5 py-2.5 rounded-xl font-bold text-sm hover:bg-indigo-600 hover:text-white transition-all shadow-sm ${isDarkMode ? 'bg-indigo-900/20 text-indigo-400' : 'bg-indigo-50 text-indigo-600'}`}>Inscribirse</button>
+                      }} className="px-5 py-2.5 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400 rounded-xl font-bold text-sm hover:bg-indigo-600 hover:text-white transition-all shadow-sm">Inscribirse</button>
                     </div>
                   ))}
                 </div>
