@@ -3,13 +3,16 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
-import { GraduationCap, BookOpen, Loader2, Sun, Moon, Eye, EyeOff } from 'lucide-react'
+import { GraduationCap, BookOpen, Loader2, Sun, Moon, Eye, EyeOff, User } from 'lucide-react'
 import { useTheme } from 'next-themes'
 
 export default function LoginPage() {
   const router = useRouter()
+  // Campos del formulario
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [fullName, setFullName] = useState('') // NUEVO CAMPO
+
   const [isSignUp, setIsSignUp] = useState(false)
   const [role, setRole] = useState<'student' | 'teacher'>('student')
   const [loading, setLoading] = useState(false)
@@ -27,12 +30,13 @@ export default function LoginPage() {
 
     try {
       if (isSignUp) {
+        // REGISTRO CON NOMBRE COMPLETO
         const { error } = await supabase.auth.signUp({
           email,
           password,
           options: {
             data: {
-              full_name: email.split('@')[0],
+              full_name: fullName, // Guardamos el nombre aquí
               role: role,
             },
           },
@@ -40,6 +44,7 @@ export default function LoginPage() {
         if (error) throw error
         setMsg('¡Cuenta creada! Revisa tu correo o inicia sesión.')
       } else {
+        // LOGIN
         const { error } = await supabase.auth.signInWithPassword({
           email,
           password,
@@ -57,16 +62,15 @@ export default function LoginPage() {
   if (!mounted) return null
 
   return (
-    <div className="relative min-h-screen flex items-center justify-center p-4 overflow-hidden">
-      {/* IMAGEN DE FONDO TIPO PAISAJE OSCURO */}
+    <div className="relative min-h-screen flex items-center justify-center p-4 overflow-hidden bg-gray-900">
+      {/* FONDO */}
       <div
-        className="absolute inset-0 z-0 bg-cover bg-center bg-no-repeat"
+        className="absolute inset-0 z-0 bg-cover bg-center bg-no-repeat opacity-60"
         style={{
           backgroundImage: "url('https://images.unsplash.com/photo-1472214103451-9374bd1c798e?q=80&w=2070&auto=format&fit=crop')",
         }}
       >
-        {/* Capa oscura para asegurar contraste */}
-        <div className="absolute inset-0 bg-black/60 dark:bg-black/70 backdrop-blur-[2px]"></div>
+        <div className="absolute inset-0 bg-gradient-to-t from-gray-900 to-transparent"></div>
       </div>
 
       <button
@@ -76,8 +80,8 @@ export default function LoginPage() {
         {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
       </button>
 
-      {/* TARJETA GLASSMORPHISM */}
-      <div className="relative z-10 w-full max-w-md p-8 rounded-2xl shadow-2xl border border-white/10 bg-white/10 backdrop-blur-xl animate-fade-in-up">
+      {/* TARJETA PRINCIPAL */}
+      <div className="relative z-10 w-full max-w-md p-8 rounded-3xl shadow-2xl border border-white/10 bg-white/10 backdrop-blur-xl animate-in fade-in zoom-in duration-500">
 
         <div className="text-center mb-8">
           <div className="flex justify-center mb-4">
@@ -89,69 +93,86 @@ export default function LoginPage() {
             E-Learning AI
           </h1>
           <p className="text-blue-200 mt-2 font-light">
-            {isSignUp ? 'Comienza tu viaje de aprendizaje' : 'Bienvenido de nuevo, explorador'}
+            {isSignUp ? 'Crea tu perfil académico' : 'Bienvenido de nuevo'}
           </p>
         </div>
 
-        <form onSubmit={handleAuth} className="space-y-5">
+        <form onSubmit={handleAuth} className="space-y-4">
+          {/* SELECCIÓN DE ROL */}
           {isSignUp && (
             <div className="flex bg-black/20 p-1 rounded-xl mb-4 border border-white/5">
               <button
                 type="button"
                 onClick={() => setRole('student')}
-                className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all duration-300 ${role === 'student' ? 'bg-white text-blue-900 shadow-md' : 'text-gray-300 hover:text-white'
-                  }`}
+                className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all duration-300 ${role === 'student' ? 'bg-white text-blue-900 shadow-md' : 'text-gray-300 hover:text-white'}`}
               >
                 Estudiante
               </button>
               <button
                 type="button"
                 onClick={() => setRole('teacher')}
-                className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all duration-300 ${role === 'teacher' ? 'bg-white text-blue-900 shadow-md' : 'text-gray-300 hover:text-white'
-                  }`}
+                className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all duration-300 ${role === 'teacher' ? 'bg-white text-blue-900 shadow-md' : 'text-gray-300 hover:text-white'}`}
               >
                 Docente
               </button>
             </div>
           )}
 
-          <div className="space-y-4">
-            <div className="relative group">
-              <label className="block text-xs font-bold text-blue-200 mb-1 uppercase tracking-wider ml-1">Email</label>
-              <input
-                type="email"
-                required
-                className="w-full px-4 py-3 bg-black/40 border border-white/10 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-white placeholder-gray-400 transition-all group-hover:bg-black/50 backdrop-blur-sm"
-                placeholder="ejemplo@correo.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-            </div>
-
-            <div className="relative group">
-              <label className="block text-xs font-bold text-blue-200 mb-1 uppercase tracking-wider ml-1">Contraseña</label>
+          {/* INPUT: NOMBRE COMPLETO (SOLO REGISTRO) */}
+          {isSignUp && (
+            <div className="relative group animate-in slide-in-from-top-2 fade-in">
+              <label className="block text-xs font-bold text-blue-200 mb-1 uppercase tracking-wider ml-1">Nombre Completo</label>
               <div className="relative">
                 <input
-                  type={showPassword ? "text" : "password"}
+                  type="text"
                   required
-                  className="w-full px-4 py-3 bg-black/40 border border-white/10 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-white placeholder-gray-400 transition-all group-hover:bg-black/50 backdrop-blur-sm pr-10"
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full px-4 py-3 bg-black/40 border border-white/10 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-white placeholder-gray-400 pl-10 transition-all"
+                  placeholder="Juan Pérez"
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-white transition-colors"
-                >
-                  {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-                </button>
+                <User className="absolute left-3 top-3.5 text-gray-400 w-4 h-4" />
               </div>
+            </div>
+          )}
+
+          {/* INPUT: EMAIL */}
+          <div className="relative group">
+            <label className="block text-xs font-bold text-blue-200 mb-1 uppercase tracking-wider ml-1">Email</label>
+            <input
+              type="email"
+              required
+              className="w-full px-4 py-3 bg-black/40 border border-white/10 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-white placeholder-gray-400 transition-all"
+              placeholder="ejemplo@correo.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+          </div>
+
+          {/* INPUT: PASSWORD */}
+          <div className="relative group">
+            <label className="block text-xs font-bold text-blue-200 mb-1 uppercase tracking-wider ml-1">Contraseña</label>
+            <div className="relative">
+              <input
+                type={showPassword ? "text" : "password"}
+                required
+                className="w-full px-4 py-3 bg-black/40 border border-white/10 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-white placeholder-gray-400 transition-all pr-10"
+                placeholder="••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-white transition-colors"
+              >
+                {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+              </button>
             </div>
           </div>
 
           {msg && (
-            <div className="bg-red-500/20 border border-red-500/50 p-3 rounded-lg">
+            <div className="bg-red-500/20 border border-red-500/50 p-3 rounded-lg animate-in shake">
               <p className="text-sm text-center text-red-200 font-medium">{msg}</p>
             </div>
           )}
@@ -169,7 +190,7 @@ export default function LoginPage() {
           <p className="text-sm text-gray-300">
             {isSignUp ? '¿Ya eres miembro?' : '¿Aún no tienes cuenta?'}
             <button
-              onClick={() => setIsSignUp(!isSignUp)}
+              onClick={() => { setIsSignUp(!isSignUp); setMsg(''); }}
               className="ml-2 text-blue-300 font-bold hover:text-white hover:underline transition-colors"
             >
               {isSignUp ? 'Inicia Sesión' : 'Regístrate Gratis'}
