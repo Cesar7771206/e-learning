@@ -27,7 +27,7 @@ export default function LoginPage() {
 
     try {
       if (isSignUp) {
-        const { error } = await supabase.auth.signUp({
+        const { data, error } = await supabase.auth.signUp({
           email,
           password,
           options: {
@@ -38,7 +38,11 @@ export default function LoginPage() {
           },
         })
         if (error) throw error
-        setMsg('¡Cuenta creada! Revisa tu correo o inicia sesión.')
+        if (data.session) {
+          router.push('/dashboard')
+        } else {
+          setMsg('¡Cuenta creada! Revisa tu correo o inicia sesión.')
+        }
       } else {
         const { error } = await supabase.auth.signInWithPassword({
           email,
@@ -59,7 +63,7 @@ export default function LoginPage() {
   return (
     <div className="relative min-h-screen flex items-center justify-center p-4 overflow-hidden">
       {/* IMAGEN DE FONDO TIPO PAISAJE OSCURO */}
-      <div 
+      <div
         className="absolute inset-0 z-0 bg-cover bg-center bg-no-repeat"
         style={{
           backgroundImage: "url('https://images.unsplash.com/photo-1472214103451-9374bd1c798e?q=80&w=2070&auto=format&fit=crop')",
@@ -78,7 +82,7 @@ export default function LoginPage() {
 
       {/* TARJETA GLASSMORPHISM */}
       <div className="relative z-10 w-full max-w-md p-8 rounded-2xl shadow-2xl border border-white/10 bg-white/10 backdrop-blur-xl animate-fade-in-up">
-        
+
         <div className="text-center mb-8">
           <div className="flex justify-center mb-4">
             <div className="bg-gradient-to-tr from-blue-600 to-indigo-600 p-3 rounded-full shadow-lg shadow-blue-500/30">
@@ -99,18 +103,16 @@ export default function LoginPage() {
               <button
                 type="button"
                 onClick={() => setRole('student')}
-                className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all duration-300 ${
-                  role === 'student' ? 'bg-white text-blue-900 shadow-md' : 'text-gray-300 hover:text-white'
-                }`}
+                className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all duration-300 ${role === 'student' ? 'bg-white text-blue-900 shadow-md' : 'text-gray-300 hover:text-white'
+                  }`}
               >
                 Estudiante
               </button>
               <button
                 type="button"
                 onClick={() => setRole('teacher')}
-                className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all duration-300 ${
-                  role === 'teacher' ? 'bg-white text-blue-900 shadow-md' : 'text-gray-300 hover:text-white'
-                }`}
+                className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all duration-300 ${role === 'teacher' ? 'bg-white text-blue-900 shadow-md' : 'text-gray-300 hover:text-white'
+                  }`}
               >
                 Docente
               </button>
@@ -129,7 +131,7 @@ export default function LoginPage() {
                 onChange={(e) => setEmail(e.target.value)}
               />
             </div>
-            
+
             <div className="relative group">
               <label className="block text-xs font-bold text-blue-200 mb-1 uppercase tracking-wider ml-1">Contraseña</label>
               <div className="relative">
@@ -141,7 +143,7 @@ export default function LoginPage() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                 />
-                <button 
+                <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
                   className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-white transition-colors"

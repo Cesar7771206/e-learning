@@ -1,8 +1,8 @@
-
 'use client'
 
 import React, { useEffect, useState, useRef, useCallback } from 'react'
 import { supabase } from '../../lib/supabase';
+import { useTheme } from 'next-themes'
 import {
   LogOut, Plus, Book, User, Send, Bot,
   GraduationCap, Sun, Moon, Search, RefreshCw,
@@ -13,7 +13,7 @@ import {
 } from 'lucide-react'
 
 // --- CONFIGURACIÓN GEMINI API ---
-const apiKey = ""; // La clave se inyecta automáticamente en este entorno
+const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY || "";
 const MODEL_NAME = "gemini-2.5-flash-preview-09-2025";
 
 async function chatWithGemini(userMessage: string, systemInstruction: string, history: { role: string, content: string }[]) {
@@ -71,7 +71,6 @@ type Session = {
   link: string
 }
 
-// Enrollments table record
 interface Enrollment {
   student_id: string
 }
@@ -110,23 +109,15 @@ const parseMessageContent = (rawText: string) => {
   return { content, options: options.length > 0 ? options : undefined, isCodeRequest };
 }
 
-// --- SOLUCIÓN BUG VISUAL EDITOR (HIGHLIGHTER SEGURO) ---
-// Tokeniza en una sola pasada para no corromper el HTML generado al escribir palabras reservadas
 const highlightCode = (code: string) => {
   if (!code) return '';
 
   try {
-    // 1. Escapar HTML primero para evitar inyección y conflictos
     const safeCode = code
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;");
 
-    // Regex combinada: 
-    // Grupo 1: Strings (comillas dobles, simples, backticks)
-    // Grupo 2: Comentarios (// o /* */)
-    // Grupo 3: Keywords (palabras reservadas)
-    // Grupo 4: Números
     const tokenRegex = /(".*?"|'.*?'|`[\s\S]*?`)|(\/\/.*$|\/\*[\s\S]*?\*\/)|(\b(?:class|public|private|protected|function|const|let|var|if|else|return|import|export|from|async|await|new|this|typeof|interface|type|implements|extends|void|int|float|double|string|bool)\b)|(\b\d+(\.\d+)?\b)/gm;
 
     return safeCode.replace(tokenRegex, (match, string, comment, keyword, number) => {
@@ -210,8 +201,8 @@ const CodeEditor = ({ value, onChange, onRun, readOnly }: { value: string, onCha
 
 export default function Dashboard() {
   const [mounted, setMounted] = useState(false)
-  // SOLUCIÓN: Modo Oscuro por defecto como pediste
-  const [isDarkMode, setIsDarkMode] = useState(true)
+  const { theme, setTheme, resolvedTheme } = useTheme()
+  const isDarkMode = mounted && (theme === 'dark' || resolvedTheme === 'dark')
 
   // Estados Globales
   const [loadingProfile, setLoadingProfile] = useState(true)
@@ -244,7 +235,6 @@ export default function Dashboard() {
 
   const chatEndRef = useRef<HTMLDivElement>(null)
 
-  // --- HELPER: RESET FORM ---
   const resetForm = () => {
     setNewCourseTitle('');
     setNewCourseDesc('');
@@ -252,7 +242,6 @@ export default function Dashboard() {
     setEditingCourseId(null);
   }
 
-  // --- CARGA INICIAL ---
   const fetchProfile = useCallback(async (currentUser: any) => {
     try {
       const { data, error } = await supabase.from('profiles').select('*').eq('id', currentUser.id).maybeSingle()
@@ -267,7 +256,6 @@ export default function Dashboard() {
 
       if (!data || error) {
         await supabase.from('profiles').upsert(updates)
-        // Recargar solo si es absolutamente necesario, preferimos actualizar estado local
         const { data: newData } = await supabase.from('profiles').select('*').eq('id', currentUser.id).single();
         setProfile(newData);
       } else {
@@ -303,19 +291,14 @@ export default function Dashboard() {
     }
   }, [view, selectedCourse, profile])
 
-  // --- GESTIÓN DE CURSOS (ROBUSTA) ---
   const fetchCourses = async (role: string | undefined, userId: string) => {
     try {
       let allData: any[] = []
-
-      // Intentamos cargar con relación a perfiles
       const { data: dataWithProfiles, error: errorProfiles } = await supabase.from('courses').select('*, profiles(full_name)')
 
       if (!errorProfiles && dataWithProfiles) {
         allData = dataWithProfiles
       } else {
-        // Fallback: Si falla la relación, cargamos solo los cursos crudos
-        console.warn("Cargando cursos sin perfiles (fallback)...");
         const { data: rawData } = await supabase.from('courses').select('*')
         allData = rawData || []
       }
@@ -335,11 +318,9 @@ export default function Dashboard() {
     } catch (e) { console.error("Error fetching courses:", e) }
   }
 
-  // --- SOLUCIÓN: GESTIÓN DE ESTUDIANTES (DOS PASOS PARA EVITAR ERRORES) ---
   const fetchEnrolledStudents = async (courseId: number) => {
     setLoadingStudents(true)
     try {
-      // PASO 1: Obtener solo los IDs de los estudiantes
       const { data: enrollData, error: enrollError } = await supabase
         .from('enrollments')
         .select('student_id')
@@ -355,7 +336,6 @@ export default function Dashboard() {
 
       const studentIds: string[] = enrollData.map((e: Enrollment) => e.student_id);
 
-      // PASO 2: Obtener perfiles usando esos IDs
       const { data: profilesData, error: profilesError } = await supabase
         .from('profiles')
         .select('*')
@@ -363,7 +343,6 @@ export default function Dashboard() {
 
       if (profilesError) throw profilesError;
 
-      // Mapear asegurando que tenemos datos
       const students: Profile[] = studentIds.map((id: string) => {
         const foundProfile = profilesData?.find((p: Profile) => p.id === id);
         return foundProfile || {
@@ -388,7 +367,6 @@ export default function Dashboard() {
     setCourseSessions(data || [])
   }
 
-  // --- CHAT IA ---
   const fetchChatHistory = async (courseId: number) => {
     if (!user) return
     setAiLoading(true)
@@ -508,19 +486,15 @@ export default function Dashboard() {
     return fmt;
   }
 
-  // --- ACCIONES CRUD MEJORADAS ---
-
   const createOrUpdateCourse = async () => {
     if (!user) return;
     const payload = { title: newCourseTitle, description: newCourseDesc, category: newCourseCategory };
 
     try {
       if (editingCourseId) {
-        // Actualización (UPDATE)
         const { error } = await supabase.from('courses').update(payload).eq('id', editingCourseId);
         if (error) throw error;
 
-        // Actualización optimista local
         const updated = { ...selectedCourse, ...payload } as Course;
         setMyCourses(prev => prev.map(c => c.id === editingCourseId ? { ...c, ...payload } : c));
         setCourses(prev => prev.map(c => c.id === editingCourseId ? { ...c, ...payload } : c));
@@ -530,7 +504,6 @@ export default function Dashboard() {
         }
         alert("Curso actualizado correctamente.");
       } else {
-        // Creación (CREATE)
         const { error } = await supabase.from('courses').insert({ ...payload, created_by: user.id, is_published: true });
         if (error) throw error;
         fetchCourses('teacher', user.id);
@@ -543,7 +516,6 @@ export default function Dashboard() {
     }
   }
 
-  // --- SOLUCIÓN: ELIMINACIÓN ROBUSTA (SECUENCIAL Y EN CASCADA) ---
   const handleDeleteCourse = async (courseId: number, e: React.MouseEvent) => {
     e.stopPropagation();
     if (!confirm("⚠️ ADVERTENCIA: ¿Estás seguro de eliminar este curso?\nSe borrarán permanentemente todos los estudiantes inscritos, chats, sesiones y tareas.")) return;
@@ -551,31 +523,25 @@ export default function Dashboard() {
     try {
       console.log("Iniciando eliminación en cascada...");
 
-      // 1. Obtener Sesiones de IA
       interface AiSession {
         id: number;
       }
       const { data: aiSessions }: { data: AiSession[] | null } = await supabase.from('ai_sessions').select('id').eq('course_id', courseId);
       const aiSessionIds: number[] = aiSessions?.map((s: AiSession) => s.id) || [];
 
-      // 2. Borrar Mensajes de IA
       if (aiSessionIds.length > 0) {
         await supabase.from('ai_messages').delete().in('session_id', aiSessionIds);
       }
 
-      // 3. Borrar Sesiones de IA (Padres)
       await supabase.from('ai_sessions').delete().eq('course_id', courseId);
 
-      // 4. Borrar el resto SECUENCIALMENTE para evitar bloqueos
       await supabase.from('chat_messages').delete().eq('course_id', courseId);
       await supabase.from('sessions').delete().eq('course_id', courseId);
       await supabase.from('tutoring_sessions').delete().eq('course_id', courseId);
 
-      // 5. Borrar Inscripciones (Paso crítico antes de borrar curso)
       const { error: enrollError }: { error: any } = await supabase.from('enrollments').delete().eq('course_id', courseId);
       if (enrollError) console.error("Error borrando enrollments:", enrollError);
 
-      // 6. Finalmente borrar Curso
       const { error: courseError }: { error: any } = await supabase.from('courses').delete().eq('id', courseId);
       if (courseError) throw courseError;
 
@@ -673,7 +639,7 @@ export default function Dashboard() {
             </div>
           </div>
           <div className="flex gap-2">
-            <button onClick={() => setIsDarkMode(!isDarkMode)} className={`flex-1 p-2 rounded-lg ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700' : 'bg-gray-100 hover:bg-gray-200'} flex justify-center`}><Sun className={`w-4 h-4 ${isDarkMode ? 'hidden' : 'block'}`} /><Moon className={`w-4 h-4 ${isDarkMode ? 'block' : 'hidden'}`} /></button>
+            <button onClick={() => setTheme(isDarkMode ? 'light' : 'dark')} className={`flex-1 p-2 rounded-lg ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700' : 'bg-gray-100 hover:bg-gray-200'} flex justify-center`}><Sun className={`w-4 h-4 ${isDarkMode ? 'hidden' : 'block'}`} /><Moon className={`w-4 h-4 ${isDarkMode ? 'block' : 'hidden'}`} /></button>
             <button onClick={() => supabase.auth.signOut().then(() => window.location.reload())} className="flex-1 p-2 rounded-lg bg-red-50 dark:bg-red-900/20 text-red-500 hover:bg-red-100 flex justify-center"><LogOut className="w-4 h-4" /></button>
           </div>
         </div>
@@ -707,6 +673,7 @@ export default function Dashboard() {
                       <div className="absolute top-0 right-0 p-4 opacity-10 transform translate-x-4 -translate-y-4">
                         {c.category === 'math' ? <Calculator size={100} color="white" /> : c.category === 'programming' ? <Terminal size={100} color="white" /> : c.category === 'letters' ? <Feather size={100} color="white" /> : <Book size={100} color="white" />}
                       </div>
+
                       <span className="self-end bg-white/20 backdrop-blur text-white text-[10px] px-2 py-0.5 rounded-full uppercase font-bold tracking-wider border border-white/10">{c.category}</span>
                       <h3 className="text-white font-bold text-xl drop-shadow-md z-10">{c.title}</h3>
                     </div>
